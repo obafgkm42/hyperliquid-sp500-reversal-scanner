@@ -1,6 +1,7 @@
 export interface Env {
   DISCORD_WEBHOOK_URL: string;
   MANUAL_SCAN_TOKEN?: string;
+  LANGUAGE?: string;
   HYPERLIQUID_COIN?: string;
   REGULAR_SCAN_MINUTES?: string;
   FINAL_HOUR_SCAN_MINUTES?: string;
@@ -14,8 +15,11 @@ export interface Env {
   SCANNER_STATE?: KVNamespace;
 }
 
+export type Language = "en" | "zh";
+
 export interface ScannerConfig {
   discordWebhookUrl: string;
+  language: Language;
   hyperliquidCoin: string;
   regularScanMinutes: number;
   finalHourScanMinutes: number;

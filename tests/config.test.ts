@@ -9,6 +9,7 @@ describe("loadConfig", () => {
         "https://discord.com/api/webhooks/example/token",
     });
 
+    expect(config.language).toBe("zh");
     expect(config.hyperliquidCoin).toBe("xyz:SP500");
     expect(config.regularScanMinutes).toBe(15);
     expect(config.finalHourScanMinutes).toBe(5);
@@ -45,5 +46,25 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ DISCORD_WEBHOOK_URL: "" })).toThrow(
       "DISCORD_WEBHOOK_URL",
     );
+  });
+
+  it("accepts English as the notification language", () => {
+    const config = loadConfig({
+      DISCORD_WEBHOOK_URL:
+        "https://discord.com/api/webhooks/example/token",
+      LANGUAGE: "EN",
+    });
+
+    expect(config.language).toBe("en");
+  });
+
+  it("rejects an unsupported language", () => {
+    expect(() =>
+      loadConfig({
+        DISCORD_WEBHOOK_URL:
+          "https://discord.com/api/webhooks/example/token",
+        LANGUAGE: "ja",
+      })
+    ).toThrow("LANGUAGE must be en or zh");
   });
 });

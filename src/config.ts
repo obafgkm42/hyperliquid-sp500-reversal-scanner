@@ -1,4 +1,4 @@
-import type { Env, ScannerConfig } from "./types";
+import type { Env, Language, ScannerConfig } from "./types";
 
 const DISCORD_WEBHOOK_PREFIX = "https://discord.com/api/webhooks/";
 
@@ -13,6 +13,7 @@ export function loadConfig(env: Env): ScannerConfig {
 
   return {
     discordWebhookUrl,
+    language: parseLanguage(env.LANGUAGE),
     hyperliquidCoin: env.HYPERLIQUID_COIN?.trim() || "xyz:SP500",
     regularScanMinutes: positiveInteger(
       env.REGULAR_SCAN_MINUTES,
@@ -58,6 +59,14 @@ export function loadConfig(env: Env): ScannerConfig {
     workerVersionUploadedAt: parseCloudflareVersionTimestamp(env),
     scannerState: env.SCANNER_STATE,
   };
+}
+
+function parseLanguage(rawValue: string | undefined): Language {
+  const language = rawValue?.trim().toLowerCase() || "zh";
+  if (language !== "en" && language !== "zh") {
+    throw new Error("LANGUAGE must be en or zh");
+  }
+  return language;
 }
 
 function resolveWorkerVersionKey(env: Env): string {

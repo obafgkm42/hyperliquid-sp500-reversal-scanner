@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { sendMarketBrief, sendSignal, sendVersionNotice } from "../src/discord";
+import {
+  publicScanResult,
+  sendMarketBrief,
+  sendSignal,
+  sendVersionNotice,
+} from "../src/discord";
 import type { ReversalLocation, ScanResult } from "../src/types";
 
 describe("sendMarketBrief", () => {
@@ -38,10 +43,51 @@ describe("sendMarketBrief", () => {
     expect(payload.embeds[0].description).toContain("xyz:SP500 最新 6090.0");
     expect(payload.embeds[0].description).toContain("日內區間 6075.0–6100.0");
     expect(payload.embeds[0].description).toContain("暫無合格訊號");
-    expect(payload.embeds[0].description).toContain(result.status);
+    expect(payload.embeds[0].description).toContain(
+      "沒有新的回看極值拒絕形態",
+    );
     expect(payload.embeds[0].fields).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "最新價格", value: "6090.0" }),
+      ]),
+    );
+  });
+
+  it("renders an English brief when configured", async () => {
+    const requests: RequestInit[] = [];
+    const fetcher = async (_url: string | URL | Request, init?: RequestInit) => {
+      requests.push(init ?? {});
+      return new Response(null, { status: 204 });
+    };
+    const result: ScanResult = {
+      market: "xyz:SP500",
+      candleCount: 12,
+      sessionHigh: 6100,
+      sessionLow: 6075,
+      latestPrice: 6090,
+      status: "no fresh lookback extreme rejection passed watch or alert thresholds",
+      watch: null,
+      signal: null,
+    };
+
+    await sendMarketBrief(
+      "https://discord.com/api/webhooks/example/token",
+      result,
+      new Date("2026-06-24T00:30:00Z"),
+      fetcher as typeof fetch,
+      undefined,
+      "en",
+    );
+
+    const payload = JSON.parse(String(requests[0]?.body));
+    expect(payload.content).toContain("SP500 30-minute brief");
+    expect(payload.content).toContain("No qualified signal");
+    expect(payload.embeds[0].title).toBe(
+      "SP500 Reversal Scanner 30-Minute Brief",
+    );
+    expect(payload.embeds[0].fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "Latest price", value: "6090.0" }),
       ]),
     );
   });
@@ -112,6 +158,36 @@ describe("sendSignal", () => {
       ]),
     );
   });
+
+  it("renders English signal copy and diagnostics when configured", async () => {
+    const requests: RequestInit[] = [];
+    const fetcher = async (_url: string | URL | Request, init?: RequestInit) => {
+      requests.push(init ?? {});
+      return new Response(null, { status: 204 });
+    };
+
+    await sendSignal(
+      "https://discord.com/api/webhooks/example/token",
+      opportunity("watch"),
+      fetcher as typeof fetch,
+      "en",
+    );
+
+    const payload = JSON.parse(String(requests[0]?.body));
+    expect(payload.embeds[0].title).toContain(
+      "Bottom reversal candidate zone",
+    );
+    expect(payload.embeds[0].description).toContain("Early WATCH level");
+    expect(payload.embeds[0].fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "Level", value: "WATCH" }),
+        expect.objectContaining({
+          name: "Why it qualifies",
+          value: "• fresh lookback low rejected",
+        }),
+      ]),
+    );
+  });
 });
 
 describe("sendVersionNotice", () => {
@@ -132,6 +208,55 @@ describe("sendVersionNotice", () => {
     const payload = JSON.parse(String(requests[0]?.body));
     expect(payload.embeds[0].description).toContain("2.1.0");
     expect(payload.embeds[0].description).toContain("2026-06-24T00:00:00.000Z");
+  });
+
+  it("renders an English version notice when configured", async () => {
+    const requests: RequestInit[] = [];
+    const fetcher = async (_url: string | URL | Request, init?: RequestInit) => {
+      requests.push(init ?? {});
+      return new Response(null, { status: 204 });
+    };
+
+    await sendVersionNotice(
+      "https://discord.com/api/webhooks/example/token",
+      "2.1.0",
+      new Date("2026-06-24T00:00:00Z"),
+      fetcher as typeof fetch,
+      "en",
+    );
+
+    const payload = JSON.parse(String(requests[0]?.body));
+    expect(payload.embeds[0].title).toContain("updated");
+    expect(payload.embeds[0].description).toContain(
+      "Worker version `2.1.0` is active.",
+    );
+    expect(payload.embeds[0].fields[0].name).toBe("Reminder");
+  });
+});
+
+describe("publicScanResult", () => {
+  it("localizes status text without changing machine-readable enums", () => {
+    const result: ScanResult = {
+      market: "xyz:SP500",
+      candleCount: 12,
+      sessionHigh: 6100,
+      sessionLow: 6075,
+      latestPrice: 6090,
+      status: "watch-level modern reversal-zone setup found; alert thresholds not yet met",
+      watch: opportunity("watch"),
+      signal: null,
+    };
+
+    const localized = publicScanResult(result, "zh") as {
+      status: string;
+      watch: { direction: string; policy: { reasons: string[] } };
+    };
+
+    expect(localized.status).toContain("WATCH 級別");
+    expect(localized.watch.direction).toBe("bullish");
+    expect(localized.watch.policy.reasons[0]).toBe(
+      "已通過現代反轉區市場狀態門檻",
+    );
   });
 });
 

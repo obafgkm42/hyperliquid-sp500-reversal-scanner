@@ -65,8 +65,9 @@ export default {
     }
 
     try {
-      const result = await runScan(loadConfig(env), new Date(), false, false);
-      return Response.json(publicScanResult(result));
+      const config = loadConfig(env);
+      const result = await runScan(config, new Date(), false, false);
+      return Response.json(publicScanResult(result, config.language));
     } catch (error) {
       console.error("manual scan failed", safeErrorName(error));
       return Response.json({ error: "scan failed" }, { status: 502 });
@@ -102,11 +103,23 @@ async function runScan(
   );
   const notificationOpportunity = result.signal ?? result.watch;
   if (notify && notificationOpportunity !== null) {
-    await sendSignal(config.discordWebhookUrl, notificationOpportunity);
+    await sendSignal(
+      config.discordWebhookUrl,
+      notificationOpportunity,
+      fetch,
+      config.language,
+    );
   }
   if (notify && sendBrief) {
     const chart = await renderMarketBriefChart(result, sessionCandles);
-    await sendMarketBrief(config.discordWebhookUrl, result, now, fetch, chart);
+    await sendMarketBrief(
+      config.discordWebhookUrl,
+      result,
+      now,
+      fetch,
+      chart,
+      config.language,
+    );
   }
   return result;
 }
@@ -156,6 +169,8 @@ async function maybeSendVersionNotice(
     config.discordWebhookUrl,
     config.workerVersionLabel,
     now,
+    fetch,
+    config.language,
   );
   await config.scannerState.put(VERSION_NOTICE_KEY, config.workerVersionKey);
 }
@@ -183,6 +198,8 @@ async function maybeSendRecentVersionNoticeWithoutState(
     config.discordWebhookUrl,
     config.workerVersionLabel,
     now,
+    fetch,
+    config.language,
   );
   lastVersionNoticeSentFor = versionKey;
 }

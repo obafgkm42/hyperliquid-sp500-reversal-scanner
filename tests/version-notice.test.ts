@@ -110,6 +110,42 @@ describe("scheduled version notices", () => {
     expect(String(requests[0]?.body)).toContain("2026.06.24.204500");
     expect(writes).toEqual([["last-version-notice", "cf-1234567890ab"]]);
   });
+
+  it("passes the configured language to version notifications", async () => {
+    const requests: RequestInit[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (_url: string | URL | Request, init?: RequestInit) => {
+        requests.push(init ?? {});
+        return new Response(null, { status: 204 });
+      },
+    );
+    const waitUntilPromises: Promise<unknown>[] = [];
+
+    await worker.scheduled(
+      scheduledController("2026-06-24T12:46:37.000Z"),
+      {
+        ...baseEnv(),
+        LANGUAGE: "en",
+        CF_VERSION_METADATA: {
+          id: "abcdef1234567890",
+          tag: "latest",
+          timestamp: "2026-06-24T12:45:00.000Z",
+        },
+        SCANNER_STATE: {
+          get: async () => null,
+          put: async () => undefined,
+        } as unknown as KVNamespace,
+      },
+      waitUntilContext(waitUntilPromises),
+    );
+    await Promise.all(waitUntilPromises);
+
+    const payload = JSON.parse(String(requests[0]?.body));
+    expect(payload.embeds[0].title).toBe(
+      "Hyperliquid SP500 Reversal Scanner updated",
+    );
+    expect(payload.embeds[0].fields[0].name).toBe("Reminder");
+  });
 });
 
 function baseEnv(): Env {

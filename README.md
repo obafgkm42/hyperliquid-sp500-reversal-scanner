@@ -109,6 +109,15 @@ npx wrangler secret put DISCORD_WEBHOOK_URL
 npx wrangler secret put MANUAL_SCAN_TOKEN
 ```
 
+Set `LANGUAGE` in `wrangler.toml` to control Discord notifications and the
+localized status text returned by the authenticated `/scan` endpoint. Supported
+values are `zh` and `en`; the default is `zh`:
+
+```toml
+[vars]
+LANGUAGE = "zh"
+```
+
 For local development, copy `.env.example` to `.dev.vars`. Never commit the
 real webhook URL or token.
 
