@@ -45,6 +45,59 @@ export interface Candle {
   tradeCount: number;
 }
 
+export interface MarketAssetContext {
+  coin: string;
+  markPrice: number;
+  oraclePrice: number;
+  previousDayPrice: number;
+  fundingRate: number;
+  premium: number | null;
+  dayNotionalVolume: number;
+}
+
+export type MarketFragilityLevel =
+  | "resilient"
+  | "fragile"
+  | "breaking"
+  | "panic"
+  | "unknown";
+
+export type MarketFragilityDataQuality =
+  | "full"
+  | "partial"
+  | "insufficient";
+
+export type MarketFragilityIndicatorId =
+  | "session_loss"
+  | "vwap_repair_failure"
+  | "poor_close_location"
+  | "downside_tail_cluster"
+  | "mega_cap_breadth"
+  | "equity_cross_confirmation";
+
+export type MarketFragilityIndicatorState =
+  | "healthy"
+  | "stressed"
+  | "unavailable";
+
+export interface MarketFragilityIndicator {
+  id: MarketFragilityIndicatorId;
+  state: MarketFragilityIndicatorState;
+  value: number | null;
+  displayValue: string;
+  threshold: string;
+}
+
+export interface MarketFragilitySnapshot {
+  level: MarketFragilityLevel;
+  score: number | null;
+  stressedIndicatorCount: number;
+  availableIndicatorCount: number;
+  totalIndicatorCount: number;
+  dataQuality: MarketFragilityDataQuality;
+  indicators: MarketFragilityIndicator[];
+}
+
 export type Direction = "bullish" | "bearish";
 export type SignalLevel = "watch" | "alert";
 export type SignalPolicyRole =
@@ -76,6 +129,27 @@ export interface ReversalLocation {
   policy: SignalPolicy;
   reasons: string[];
   timestamp: number;
+}
+
+export type NotificationStatus =
+  | "fresh"
+  | "outside_entry_zone"
+  | "invalidated_before_delivery"
+  | "target_reached_before_delivery";
+
+export interface NotificationOpportunity {
+  signal: ReversalLocation;
+  observedAt: number;
+  observedPrice: number;
+  status: NotificationStatus;
+  reason: string;
+}
+
+export interface AnalysisThresholds {
+  minimumWatchPriceR: number;
+  minimumWatchConfidenceScore: number;
+  minimumPriceR: number;
+  minimumConfidenceScore: number;
 }
 
 export interface ScanResult {

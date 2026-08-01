@@ -1,4 +1,4 @@
-import type { Candle } from "./types";
+import type { Candle, MarketAssetContext } from "./types";
 
 const HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info";
 const REQUEST_LOOKBACK_MS = 18 * 60 * 60 * 1_000;
@@ -17,9 +17,27 @@ interface HyperliquidCandle {
   n: number;
 }
 
+interface HyperliquidPerpAsset {
+  name: string;
+  isDelisted?: boolean;
+}
+
+interface HyperliquidPerpMetadata {
+  universe: HyperliquidPerpAsset[];
+}
+
+interface HyperliquidAssetContext {
+  markPx: string;
+  oraclePx: string;
+  prevDayPx: string;
+  funding: string;
+  premium: string | null;
+  dayNtlVlm: string;
+}
+
 export class HyperliquidRateLimitError extends Error {
-  constructor(status: number) {
-    super(`Hyperliquid candle request failed: ${status}`);
+  constructor(status: number, operation = "info") {
+    super(`Hyperliquid ${operation} request failed: ${status}`);
     this.name = "HyperliquidRateLimitError";
   }
 }
@@ -45,9 +63,67 @@ export async function fetchFiveMinuteCandles(
   );
 }
 
+/**
+ * Fetch a compact set of live XYZ market contexts with one public metadata
+ * request. Missing or delisted requested assets are omitted from the result.
+ */
+export async function fetchXyzMarketContexts(
+  coins: readonly string[],
+  fetcher: typeof fetch = fetch,
+): Promise<MarketAssetContext[]> {
+  const response = await fetchInfoWithRetry(
+    {
+      type: "metaAndAssetCtxs",
+      dex: "xyz",
+    },
+    "market context",
+    fetcher,
+  );
+  const payload: unknown = await response.json();
+  if (!Array.isArray(payload) || payload.length !== 2) {
+    throw new Error("Hyperliquid market context response is invalid");
+  }
+  const metadata = parsePerpMetadata(payload[0]);
+  const contexts = payload[1];
+  if (
+    !Array.isArray(contexts) ||
+    contexts.length !== metadata.universe.length
+  ) {
+    throw new Error("Hyperliquid market context arrays are misaligned");
+  }
+  const requestedCoins = new Set(coins);
+  return metadata.universe.flatMap((asset, index) => {
+    if (asset.isDelisted === true || !requestedCoins.has(asset.name)) {
+      return [];
+    }
+    const context = parseAssetContext(asset.name, contexts[index]);
+    return context === null ? [] : [context];
+  });
+}
+
 async function fetchCandlesWithRetry(
   coin: string,
   endTime: number,
+  fetcher: typeof fetch,
+): Promise<Response> {
+  return fetchInfoWithRetry(
+    {
+      type: "candleSnapshot",
+      req: {
+        coin,
+        interval: "5m",
+        startTime: endTime - REQUEST_LOOKBACK_MS,
+        endTime,
+      },
+    },
+    "candle",
+    fetcher,
+  );
+}
+
+async function fetchInfoWithRetry(
+  body: object,
+  operation: string,
   fetcher: typeof fetch,
 ): Promise<Response> {
   let lastStatus = 0;
@@ -55,22 +131,16 @@ async function fetchCandlesWithRetry(
     const response = await fetcher(HYPERLIQUID_INFO_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        type: "candleSnapshot",
-        req: {
-          coin,
-          interval: "5m",
-          startTime: endTime - REQUEST_LOOKBACK_MS,
-          endTime,
-        },
-      }),
+      body: JSON.stringify(body),
     });
     if (response.ok) {
       return response;
     }
     lastStatus = response.status;
     if (!isTransientStatus(response.status)) {
-      throw new Error(`Hyperliquid candle request failed: ${response.status}`);
+      throw new Error(
+        `Hyperliquid ${operation} request failed: ${response.status}`,
+      );
     }
     if (attempt < MAX_CANDLE_REQUEST_ATTEMPTS) {
       await sleep(RETRY_BASE_DELAY_MS * attempt);
@@ -78,9 +148,80 @@ async function fetchCandlesWithRetry(
   }
 
   if (lastStatus === RATE_LIMIT_STATUS) {
-    throw new HyperliquidRateLimitError(lastStatus);
+    throw new HyperliquidRateLimitError(lastStatus, operation);
   }
-  throw new Error(`Hyperliquid candle request failed: ${lastStatus}`);
+  throw new Error(`Hyperliquid ${operation} request failed: ${lastStatus}`);
+}
+
+function parsePerpMetadata(value: unknown): HyperliquidPerpMetadata {
+  if (typeof value !== "object" || value === null) {
+    throw new Error("Hyperliquid market metadata is invalid");
+  }
+  const universe = (value as { universe?: unknown }).universe;
+  if (!Array.isArray(universe) || !universe.every(isPerpAsset)) {
+    throw new Error("Hyperliquid market universe is invalid");
+  }
+  return { universe };
+}
+
+function parseAssetContext(
+  coin: string,
+  value: unknown,
+): MarketAssetContext | null {
+  if (!isAssetContext(value)) {
+    return null;
+  }
+  const premium = value.premium === null ? null : Number(value.premium);
+  const context: MarketAssetContext = {
+    coin,
+    markPrice: Number(value.markPx),
+    oraclePrice: Number(value.oraclePx),
+    previousDayPrice: Number(value.prevDayPx),
+    fundingRate: Number(value.funding),
+    premium,
+    dayNotionalVolume: Number(value.dayNtlVlm),
+  };
+  const numericValues = [
+    context.markPrice,
+    context.oraclePrice,
+    context.previousDayPrice,
+    context.fundingRate,
+    context.dayNotionalVolume,
+    ...(context.premium === null ? [] : [context.premium]),
+  ];
+  return numericValues.every(Number.isFinite) &&
+    context.markPrice > 0 &&
+    context.oraclePrice > 0 &&
+    context.previousDayPrice > 0
+    ? context
+    : null;
+}
+
+function isPerpAsset(value: unknown): value is HyperliquidPerpAsset {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as Partial<HyperliquidPerpAsset>;
+  return (
+    typeof candidate.name === "string" &&
+    (candidate.isDelisted === undefined ||
+      typeof candidate.isDelisted === "boolean")
+  );
+}
+
+function isAssetContext(value: unknown): value is HyperliquidAssetContext {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as Partial<HyperliquidAssetContext>;
+  return (
+    typeof candidate.markPx === "string" &&
+    typeof candidate.oraclePx === "string" &&
+    typeof candidate.prevDayPx === "string" &&
+    typeof candidate.funding === "string" &&
+    (typeof candidate.premium === "string" || candidate.premium === null) &&
+    typeof candidate.dayNtlVlm === "string"
+  );
 }
 
 function isTransientStatus(status: number): boolean {

@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   filterCurrentSession,
   getBriefIntervalMinutes,
+  getPreviousScanTime,
   getScheduleDecision,
+  selectAnalysisSession,
 } from "../src/market-hours";
 import type { Candle } from "../src/types";
 
@@ -61,6 +63,26 @@ describe("getScheduleDecision", () => {
 
     expect(decision.shouldRun).toBe(true);
     expect(decision.intervalMinutes).toBe(5);
+  });
+});
+
+describe("getPreviousScanTime", () => {
+  it("looks back to the last regular scan at the final-hour transition", () => {
+    expect(
+      getPreviousScanTime(
+        new Date("2026-06-23T19:00:00Z"),
+        cadence,
+      ).toISOString(),
+    ).toBe("2026-06-23T18:45:00.000Z");
+  });
+
+  it("uses the last five-minute scan when the final hour ends", () => {
+    expect(
+      getPreviousScanTime(
+        new Date("2026-06-23T20:00:00Z"),
+        cadence,
+      ).toISOString(),
+    ).toBe("2026-06-23T19:55:00.000Z");
   });
 });
 
@@ -136,6 +158,49 @@ describe("filterCurrentSession", () => {
         new Date("2026-12-15T05:05:00Z"),
       ).map((candle) => candle.startTime),
     ).toEqual([candles[1]?.startTime]);
+  });
+});
+
+describe("selectAnalysisSession", () => {
+  it("anchors RTH analysis at 09:30 New York", () => {
+    const candles = [
+      candleAt("2026-06-23T13:25:00Z"),
+      candleAt("2026-06-23T13:30:00Z"),
+      candleAt("2026-06-23T13:35:00Z"),
+      candleAt("2026-06-23T20:00:00Z"),
+    ];
+
+    const session = selectAnalysisSession(
+      candles,
+      new Date("2026-06-23T13:40:00Z"),
+    );
+
+    expect(session.kind).toBe("rth");
+    expect(session.notificationsEnabled).toBe(true);
+    expect(session.candles.map((candle) => candle.startTime)).toEqual([
+      candles[1]?.startTime,
+      candles[2]?.startTime,
+    ]);
+  });
+
+  it("keeps overnight candles for briefs but disables trade alerts", () => {
+    const candles = [
+      candleAt("2026-06-23T19:55:00Z"),
+      candleAt("2026-06-23T20:00:00Z"),
+      candleAt("2026-06-23T20:05:00Z"),
+    ];
+
+    const session = selectAnalysisSession(
+      candles,
+      new Date("2026-06-23T20:10:00Z"),
+    );
+
+    expect(session.kind).toBe("overnight");
+    expect(session.notificationsEnabled).toBe(false);
+    expect(session.candles.map((candle) => candle.startTime)).toEqual([
+      candles[1]?.startTime,
+      candles[2]?.startTime,
+    ]);
   });
 });
 

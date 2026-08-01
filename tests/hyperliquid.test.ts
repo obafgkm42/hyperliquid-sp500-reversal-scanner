@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   fetchFiveMinuteCandles,
+  fetchXyzMarketContexts,
   HyperliquidRateLimitError,
 } from "../src/hyperliquid";
 
@@ -55,3 +56,62 @@ describe("fetchFiveMinuteCandles", () => {
     ).rejects.toBeInstanceOf(HyperliquidRateLimitError);
   });
 });
+
+describe("fetchXyzMarketContexts", () => {
+  it("maps requested active assets from aligned metadata arrays", async () => {
+    const fetcher = async (): Promise<Response> =>
+      Response.json([
+        {
+          universe: [
+            { name: "xyz:SP500" },
+            { name: "xyz:XYZ100" },
+            { name: "xyz:OLD", isDelisted: true },
+          ],
+        },
+        [
+          assetContext("99", "100"),
+          assetContext("198", "200"),
+          assetContext("10", "10"),
+        ],
+      ]);
+
+    const contexts = await fetchXyzMarketContexts(
+      ["xyz:SP500", "xyz:XYZ100", "xyz:OLD"],
+      fetcher as typeof fetch,
+    );
+
+    expect(contexts).toHaveLength(2);
+    expect(contexts[0]).toMatchObject({
+      coin: "xyz:SP500",
+      markPrice: 99,
+      previousDayPrice: 100,
+    });
+    expect(contexts[1]?.coin).toBe("xyz:XYZ100");
+  });
+
+  it("rejects misaligned metadata instead of pairing wrong markets", async () => {
+    const fetcher = async (): Promise<Response> =>
+      Response.json([
+        { universe: [{ name: "xyz:SP500" }] },
+        [],
+      ]);
+
+    await expect(
+      fetchXyzMarketContexts(
+        ["xyz:SP500"],
+        fetcher as typeof fetch,
+      ),
+    ).rejects.toThrow("misaligned");
+  });
+});
+
+function assetContext(markPrice: string, previousDayPrice: string): object {
+  return {
+    markPx: markPrice,
+    oraclePx: markPrice,
+    prevDayPx: previousDayPrice,
+    funding: "0.00000625",
+    premium: "0.0001",
+    dayNtlVlm: "1000000",
+  };
+}

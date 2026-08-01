@@ -1,10 +1,17 @@
 import type {
+  AnalysisThresholds,
   Candle,
+  NotificationOpportunity,
   ReversalLocation,
   Direction,
   ScanResult,
   SignalPolicy,
 } from "./types";
+import {
+  average,
+  calculateAverageTrueRange,
+  calculateVwap,
+} from "./market-statistics";
 
 const MINIMUM_SESSION_CANDLES = 6;
 const ATR_WINDOW = 12;
@@ -17,13 +24,6 @@ const BULLISH_MINIMUM_DISTANCE_FROM_VWAP_ATR = 0.8;
 const BEARISH_MINIMUM_DISTANCE_FROM_VWAP_ATR = 1.25;
 const MINIMUM_SESSION_RANGE_ATR = 3;
 const MAXIMUM_POLICY_RISK_ATR = 2.25;
-
-interface AnalysisThresholds {
-  minimumWatchPriceR: number;
-  minimumWatchConfidenceScore: number;
-  minimumPriceR: number;
-  minimumConfidenceScore: number;
-}
 
 /**
  * Find a fresh lookback-extreme rejection with tightly bounded price risk.
@@ -54,7 +54,7 @@ export function analyzeSession(
   const priorHigh = Math.max(...priorCandles.map((candle) => candle.high));
   const priorLow = Math.min(...priorCandles.map((candle) => candle.low));
   const vwap = calculateVwap(candles);
-  const atr = calculateAverageTrueRange(candles);
+  const atr = calculateAverageTrueRange(candles, ATR_WINDOW);
 
   const candidates = (
     [
@@ -129,6 +129,121 @@ export function analyzeSession(
       candidates.length,
       policyQualifiedCandidates.length,
     ),
+  };
+}
+
+/**
+ * Analyze every newly completed candle exposed by one scheduled fetch.
+ *
+ * Production requests can remain on a slower cadence while signal detection
+ * still sees each five-minute rejection candle. The lower bound is the prior
+ * scheduled scan time, so adjacent invocations have non-overlapping windows.
+ */
+export function findNotificationOpportunities(
+  market: string,
+  candles: readonly Candle[],
+  thresholds: AnalysisThresholds,
+  earliestCandleEndTime: number,
+  observedAt: number,
+): NotificationOpportunity[] {
+  const opportunities: NotificationOpportunity[] = [];
+  const seenTimestamps = new Set<number>();
+  const observedPrice = candles.at(-1)?.close;
+  if (observedPrice === undefined) {
+    return opportunities;
+  }
+
+  for (let index = 0; index < candles.length; index += 1) {
+    const triggerCandle = candles[index];
+    if (
+      triggerCandle === undefined ||
+      triggerCandle.endTime < earliestCandleEndTime
+    ) {
+      continue;
+    }
+
+    const result = analyzeSession(
+      market,
+      candles.slice(0, index + 1),
+      thresholds,
+    );
+    const opportunity = result.signal ?? result.watch;
+    if (
+      opportunity === null ||
+      opportunity.timestamp !== triggerCandle.endTime ||
+      seenTimestamps.has(opportunity.timestamp)
+    ) {
+      continue;
+    }
+
+    seenTimestamps.add(opportunity.timestamp);
+    opportunities.push(
+      assessNotificationOpportunity(
+        opportunity,
+        candles.slice(index + 1),
+        observedAt,
+        observedPrice,
+      ),
+    );
+  }
+
+  return opportunities;
+}
+
+function assessNotificationOpportunity(
+  signal: ReversalLocation,
+  candlesAfterSignal: readonly Candle[],
+  observedAt: number,
+  observedPrice: number,
+): NotificationOpportunity {
+  if (
+    candlesAfterSignal.some((candle) =>
+      signal.direction === "bullish"
+        ? candle.low <= signal.invalidation
+        : candle.high >= signal.invalidation
+    )
+  ) {
+    return {
+      signal,
+      observedAt,
+      observedPrice,
+      status: "invalidated_before_delivery",
+      reason: "the frozen invalidation was touched before notification delivery",
+    };
+  }
+  if (
+    candlesAfterSignal.some((candle) =>
+      signal.direction === "bullish"
+        ? candle.high >= signal.target
+        : candle.low <= signal.target
+    )
+  ) {
+    return {
+      signal,
+      observedAt,
+      observedPrice,
+      status: "target_reached_before_delivery",
+      reason: "the frozen target was touched before notification delivery",
+    };
+  }
+  if (
+    observedPrice < signal.entryLow ||
+    observedPrice > signal.entryHigh
+  ) {
+    return {
+      signal,
+      observedAt,
+      observedPrice,
+      status: "outside_entry_zone",
+      reason: "the observed price left the frozen entry watch zone",
+    };
+  }
+  return {
+    signal,
+    observedAt,
+    observedPrice,
+    status: "fresh",
+    reason: "the setup remained inside its entry zone at delivery",
   };
 }
 
@@ -423,44 +538,6 @@ function chooseMeanReversionTarget(
           .filter((target) => target < price)
           .sort((left, right) => right - left);
   return targets[0] ?? null;
-}
-
-function calculateVwap(candles: readonly Candle[]): number {
-  const totalVolume = candles.reduce(
-    (total, candle) => total + candle.volume,
-    0,
-  );
-  if (totalVolume <= 0) {
-    return average(candles.map((candle) => candle.close));
-  }
-  return (
-    candles.reduce(
-      (total, candle) =>
-        total +
-        ((candle.high + candle.low + candle.close) / 3) * candle.volume,
-      0,
-    ) / totalVolume
-  );
-}
-
-function calculateAverageTrueRange(candles: readonly Candle[]): number {
-  const sample = candles.slice(-(ATR_WINDOW + 1));
-  const trueRanges = sample.slice(1).map((candle, index) => {
-    const previousClose = sample[index]?.close ?? candle.open;
-    return Math.max(
-      candle.high - candle.low,
-      Math.abs(candle.high - previousClose),
-      Math.abs(candle.low - previousClose),
-    );
-  });
-  return average(trueRanges);
-}
-
-function average(values: readonly number[]): number {
-  if (values.length === 0) {
-    return 0;
-  }
-  return values.reduce((total, value) => total + value, 0) / values.length;
 }
 
 function emptyResult(

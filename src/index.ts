@@ -8,19 +8,46 @@ import {
 } from "./discord";
 import {
   fetchFiveMinuteCandles,
+  fetchXyzMarketContexts,
   HyperliquidRateLimitError,
 } from "./hyperliquid";
 import {
-  filterCurrentSession,
+  analyzeMarketFragility,
+  FRAGILITY_CONTEXT_COINS,
+} from "./market-fragility";
+import {
   getBriefIntervalMinutes,
+  getPreviousScanTime,
   getScheduleDecision,
+  selectAnalysisSession,
 } from "./market-hours";
-import { analyzeSession } from "./signal-engine";
-import type { Env, ScanResult, ScannerConfig } from "./types";
+import {
+  getLastSuccessfulCandleEnd,
+  markSignalSent,
+  setLastSuccessfulCandleEnd,
+  wasSignalSent,
+} from "./scanner-state";
+import {
+  analyzeSession,
+  findNotificationOpportunities,
+} from "./signal-engine";
+import type {
+  AnalysisThresholds,
+  Candle,
+  Env,
+  MarketFragilitySnapshot,
+  ScanResult,
+  ScannerConfig,
+} from "./types";
 
 const VERSION_NOTICE_KEY = "last-version-notice";
 const RECENT_VERSION_NOTICE_WINDOW_MS = 20 * 60 * 1000;
 let lastVersionNoticeSentFor: string | null = null;
+
+interface ScanExecutionResult {
+  scan: ScanResult;
+  fragility: MarketFragilitySnapshot | null;
+}
 
 export default {
   async scheduled(
@@ -41,7 +68,18 @@ export default {
       console.log(`scan skipped: ${decision.reason}`);
       return;
     }
-    context.waitUntil(runScheduledScan(config, now, briefDue));
+    const fallbackNotificationWindowStart = decision.shouldRun
+      ? getPreviousScanTime(now, config)
+      : null;
+    context.waitUntil(
+      runScheduledScan(
+        config,
+        now,
+        decision.shouldRun,
+        briefDue,
+        fallbackNotificationWindowStart,
+      ),
+    );
   },
 
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -66,8 +104,20 @@ export default {
 
     try {
       const config = loadConfig(env);
-      const result = await runScan(config, new Date(), false, false);
-      return Response.json(publicScanResult(result, config.language));
+      const execution = await runScan(
+        config,
+        new Date(),
+        false,
+        false,
+        null,
+      );
+      return Response.json(
+        publicScanResult(
+          execution.scan,
+          config.language,
+          execution.fragility ?? undefined,
+        ),
+      );
     } catch (error) {
       console.error("manual scan failed", safeErrorName(error));
       return Response.json({ error: "scan failed" }, { status: 502 });
@@ -80,18 +130,40 @@ async function runScan(
   now: Date,
   notify: boolean,
   sendBrief: boolean,
-): Promise<ScanResult> {
+  notificationWindowStart: Date | null,
+): Promise<ScanExecutionResult> {
   const candles = await fetchFiveMinuteCandles(
     config.hyperliquidCoin,
     now,
   );
-  const sessionCandles = filterCurrentSession(candles, now);
-  const result = analyzeSession(config.hyperliquidCoin, sessionCandles, {
+  const analysisSession = selectAnalysisSession(candles, now);
+  const sessionCandles = analysisSession.candles;
+  const thresholds: AnalysisThresholds = {
     minimumWatchPriceR: config.minimumWatchPriceR,
     minimumWatchConfidenceScore: config.minimumWatchConfidenceScore,
     minimumPriceR: config.minimumPriceR,
     minimumConfidenceScore: config.minimumConfidenceScore,
-  });
+  };
+  const result = analyzeSession(
+    config.hyperliquidCoin,
+    sessionCandles,
+    thresholds,
+  );
+  const notificationOpportunities =
+    notify &&
+    analysisSession.notificationsEnabled &&
+    notificationWindowStart !== null
+      ? findNotificationOpportunities(
+          config.hyperliquidCoin,
+          sessionCandles,
+          thresholds,
+          notificationWindowStart.getTime(),
+          now.getTime(),
+        )
+      : [];
+  let fragility = !notify
+    ? await calculateMarketFragility(sessionCandles)
+    : null;
   console.log(
     JSON.stringify({
       market: result.market,
@@ -99,18 +171,91 @@ async function runScan(
       status: result.status,
       watch: result.watch?.direction ?? null,
       signal: result.signal?.direction ?? null,
+      analysisSession: analysisSession.kind,
+      notificationsEnabled: analysisSession.notificationsEnabled,
+      evaluatedNewCandles:
+        notificationWindowStart === null
+          ? 0
+          : sessionCandles.filter(
+              (candle) =>
+                candle.endTime >= notificationWindowStart.getTime(),
+            ).length,
+      notificationTimestamps: notificationOpportunities.map(
+        (opportunity) => ({
+          signalTime: new Date(
+            opportunity.signal.timestamp,
+          ).toISOString(),
+          observedAt: new Date(opportunity.observedAt).toISOString(),
+          observedPrice: opportunity.observedPrice,
+          status: opportunity.status,
+        }),
+      ),
     }),
   );
-  const notificationOpportunity = result.signal ?? result.watch;
-  if (notify && notificationOpportunity !== null) {
+  for (const notificationOpportunity of notificationOpportunities) {
+    if (notificationOpportunity.status !== "fresh") {
+      console.log(
+        JSON.stringify({
+          status: "notification_suppressed",
+          reason: notificationOpportunity.reason,
+          market: notificationOpportunity.signal.market,
+          signalTime: new Date(
+            notificationOpportunity.signal.timestamp,
+          ).toISOString(),
+          observedAt: new Date(
+            notificationOpportunity.observedAt,
+          ).toISOString(),
+          observedPrice: notificationOpportunity.observedPrice,
+        }),
+      );
+      continue;
+    }
+    if (
+      await wasSignalSent(
+        config.scannerState,
+        notificationOpportunity.signal,
+      )
+    ) {
+      console.log(
+        JSON.stringify({
+          status: "notification_deduplicated",
+          market: notificationOpportunity.signal.market,
+          signalTime: new Date(
+            notificationOpportunity.signal.timestamp,
+          ).toISOString(),
+        }),
+      );
+      continue;
+    }
     await sendSignal(
       config.discordWebhookUrl,
-      notificationOpportunity,
+      notificationOpportunity.signal,
       fetch,
       config.language,
+      notificationOpportunity,
+    );
+    await markSignalSent(
+      config.scannerState,
+      notificationOpportunity.signal,
     );
   }
-  if (notify && sendBrief) {
+  if (sendBrief && fragility === null) {
+    // Optional cross-market work runs after time-sensitive signal delivery.
+    fragility = await calculateMarketFragility(sessionCandles);
+  }
+  if (fragility !== null) {
+    console.log(
+      JSON.stringify({
+        status: "market_fragility",
+        level: fragility.level,
+        score: fragility.score,
+        stressedIndicatorCount: fragility.stressedIndicatorCount,
+        availableIndicatorCount: fragility.availableIndicatorCount,
+        dataQuality: fragility.dataQuality,
+      }),
+    );
+  }
+  if (sendBrief) {
     const chart = await renderMarketBriefChart(result, sessionCandles);
     await sendMarketBrief(
       config.discordWebhookUrl,
@@ -119,18 +264,76 @@ async function runScan(
       fetch,
       chart,
       config.language,
+      fragility ?? undefined,
     );
   }
-  return result;
+  if (notify) {
+    const latestCompletedCandle = candles.at(-1);
+    if (latestCompletedCandle !== undefined) {
+      await setLastSuccessfulCandleEnd(
+        config.scannerState,
+        config.hyperliquidCoin,
+        latestCompletedCandle.endTime,
+      );
+    }
+  }
+  return { scan: result, fragility };
+}
+
+async function calculateMarketFragility(
+  candles: readonly Candle[],
+): Promise<MarketFragilitySnapshot> {
+  try {
+    const contexts = await fetchXyzMarketContexts(FRAGILITY_CONTEXT_COINS);
+    return analyzeMarketFragility(candles, contexts);
+  } catch (error) {
+    console.warn(
+      JSON.stringify({
+        status: "market_fragility_context_degraded",
+        reason: safeErrorName(error),
+        effect: "market fragility uses price-only indicators",
+      }),
+    );
+    return analyzeMarketFragility(candles, []);
+  }
 }
 
 async function runScheduledScan(
   config: ScannerConfig,
   now: Date,
+  notify: boolean,
   sendBrief: boolean,
+  fallbackNotificationWindowStart: Date | null,
 ): Promise<void> {
   try {
-    await runScan(config, now, true, sendBrief);
+    if (notify && config.scannerState === undefined) {
+      console.warn(
+        JSON.stringify({
+          status: "degraded",
+          reason: "scanner_state_not_bound",
+          effect:
+            "failed-scan recovery and cross-invocation signal dedupe use best-effort fallbacks",
+        }),
+      );
+    }
+    const persistedCandleEnd = notify
+      ? await getLastSuccessfulCandleEnd(
+          config.scannerState,
+          config.hyperliquidCoin,
+        )
+      : null;
+    const notificationWindowStart =
+      persistedCandleEnd !== null &&
+      persistedCandleEnd < now.getTime()
+        ? new Date(persistedCandleEnd + 1)
+        : fallbackNotificationWindowStart;
+    await runScan(
+      config,
+      now,
+      notify,
+      sendBrief,
+      notificationWindowStart,
+    );
   } catch (error) {
     if (error instanceof HyperliquidRateLimitError) {
       console.warn(

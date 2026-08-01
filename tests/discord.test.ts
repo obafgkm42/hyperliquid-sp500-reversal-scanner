@@ -6,7 +6,11 @@ import {
   sendSignal,
   sendVersionNotice,
 } from "../src/discord";
-import type { ReversalLocation, ScanResult } from "../src/types";
+import type {
+  MarketFragilitySnapshot,
+  ReversalLocation,
+  ScanResult,
+} from "../src/types";
 
 describe("sendMarketBrief", () => {
   it("sends a Discord heartbeat when no signal is present", async () => {
@@ -133,6 +137,102 @@ describe("sendMarketBrief", () => {
     );
     expect(form.get("files[0]")).toBeInstanceOf(File);
   });
+
+  it("puts the market fragility state in the push preview and embed", async () => {
+    const requests: RequestInit[] = [];
+    const fetcher = async (_url: string | URL | Request, init?: RequestInit) => {
+      requests.push(init ?? {});
+      return new Response(null, { status: 204 });
+    };
+    const result: ScanResult = {
+      market: "xyz:SP500",
+      candleCount: 12,
+      sessionHigh: 6100,
+      sessionLow: 6000,
+      latestPrice: 6010,
+      status: "no fresh lookback extreme rejection passed watch or alert thresholds",
+      watch: null,
+      signal: null,
+    };
+
+    await sendMarketBrief(
+      "https://discord.com/api/webhooks/example/token",
+      result,
+      new Date("2026-06-24T00:30:00Z"),
+      fetcher as typeof fetch,
+      undefined,
+      "zh",
+      fragilitySnapshot(),
+    );
+
+    const payload = JSON.parse(String(requests[0]?.body));
+    expect(payload.content).toMatch(/^@everyone /);
+    expect(payload.content).toContain("市場狀態 BREAKING 60/100");
+    expect(payload.content).toContain("3/6 修復機制受壓");
+    expect(payload.allowed_mentions).toEqual({ parse: ["everyone"] });
+    expect(payload.embeds[0].title).toBe("SP500 市場狀態 · BREAKING");
+    expect(payload.embeds[0].fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "受壓修復機制",
+          value: expect.stringContaining("VWAP 修復失敗"),
+        }),
+        expect.objectContaining({
+          name: "資料覆蓋",
+          value: "6/6 · 完整",
+        }),
+      ]),
+    );
+  });
+
+  it("broadcasts panic but does not mention everyone below breaking", async () => {
+    const requests: RequestInit[] = [];
+    const fetcher = async (_url: string | URL | Request, init?: RequestInit) => {
+      requests.push(init ?? {});
+      return new Response(null, { status: 204 });
+    };
+    const result: ScanResult = {
+      market: "xyz:SP500",
+      candleCount: 12,
+      sessionHigh: 6100,
+      sessionLow: 6000,
+      latestPrice: 6010,
+      status: "no fresh lookback extreme rejection passed watch or alert thresholds",
+      watch: null,
+      signal: null,
+    };
+
+    await sendMarketBrief(
+      "https://discord.com/api/webhooks/example/token",
+      result,
+      new Date("2026-06-24T01:00:00Z"),
+      fetcher as typeof fetch,
+      undefined,
+      "zh",
+      { ...fragilitySnapshot(), level: "panic", score: 80 },
+    );
+    await sendMarketBrief(
+      "https://discord.com/api/webhooks/example/token",
+      result,
+      new Date("2026-06-24T01:30:00Z"),
+      fetcher as typeof fetch,
+      undefined,
+      "zh",
+      {
+        ...fragilitySnapshot(),
+        level: "fragile",
+        score: 35,
+        stressedIndicatorCount: 2,
+      },
+    );
+
+    const panic = JSON.parse(String(requests[0]?.body));
+    const fragile = JSON.parse(String(requests[1]?.body));
+    expect(panic.content).toMatch(/^@everyone /);
+    expect(panic.allowed_mentions).toEqual({ parse: ["everyone"] });
+    expect(fragile.content).not.toContain("@everyone");
+    expect(fragile.allowed_mentions).toEqual({ parse: [] });
+  });
 });
 
 describe("sendSignal", () => {
@@ -184,6 +284,35 @@ describe("sendSignal", () => {
         expect.objectContaining({
           name: "Why it qualifies",
           value: "• fresh lookback low rejected",
+        }),
+      ]),
+    );
+  });
+
+  it("shows arrival time and price separately from the signal price", async () => {
+    const requests: RequestInit[] = [];
+    const fetcher = async (_url: string | URL | Request, init?: RequestInit) => {
+      requests.push(init ?? {});
+      return new Response(null, { status: 204 });
+    };
+
+    await sendSignal(
+      "https://discord.com/api/webhooks/example/token",
+      opportunity("alert"),
+      fetcher as typeof fetch,
+      "en",
+      {
+        observedAt: Date.parse("2026-06-24T00:45:00Z"),
+        observedPrice: 6091.5,
+      },
+    );
+
+    const payload = JSON.parse(String(requests[0]?.body));
+    expect(payload.embeds[0].fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "Delivered / current price",
+          value: "2026-06-24T00:45:00.000Z / 6091.5",
         }),
       ]),
     );
@@ -247,9 +376,14 @@ describe("publicScanResult", () => {
       signal: null,
     };
 
-    const localized = publicScanResult(result, "zh") as {
+    const localized = publicScanResult(
+      result,
+      "zh",
+      fragilitySnapshot(),
+    ) as {
       status: string;
       watch: { direction: string; policy: { reasons: string[] } };
+      marketFragility: MarketFragilitySnapshot;
     };
 
     expect(localized.status).toContain("WATCH 級別");
@@ -257,6 +391,7 @@ describe("publicScanResult", () => {
     expect(localized.watch.policy.reasons[0]).toBe(
       "已通過現代反轉區市場狀態門檻",
     );
+    expect(localized.marketFragility.level).toBe("breaking");
   });
 });
 
@@ -284,5 +419,60 @@ function opportunity(level: "watch" | "alert"): ReversalLocation {
     },
     reasons: ["fresh lookback low rejected"],
     timestamp: Date.parse("2026-06-24T00:30:00Z"),
+  };
+}
+
+function fragilitySnapshot(): MarketFragilitySnapshot {
+  return {
+    level: "breaking",
+    score: 60,
+    stressedIndicatorCount: 3,
+    availableIndicatorCount: 6,
+    totalIndicatorCount: 6,
+    dataQuality: "full",
+    indicators: [
+      {
+        id: "session_loss",
+        state: "stressed",
+        value: -0.012,
+        displayValue: "-1.20%",
+        threshold: "<= -1.0%",
+      },
+      {
+        id: "vwap_repair_failure",
+        state: "stressed",
+        value: -0.5,
+        displayValue: "-0.50 ATR",
+        threshold: "<= -0.35 ATR and 3 closes below VWAP",
+      },
+      {
+        id: "poor_close_location",
+        state: "stressed",
+        value: 0.1,
+        displayValue: "10%",
+        threshold: "<= 25% of range",
+      },
+      {
+        id: "downside_tail_cluster",
+        state: "healthy",
+        value: 1,
+        displayValue: "1/11 <= -0.25%",
+        threshold: ">= 2 volatility-adjusted large down returns",
+      },
+      {
+        id: "mega_cap_breadth",
+        state: "healthy",
+        value: 0.3,
+        displayValue: "30% (7 assets)",
+        threshold: ">= 70% down at least 0.5%",
+      },
+      {
+        id: "equity_cross_confirmation",
+        state: "healthy",
+        value: -0.004,
+        displayValue: "SP500 -0.40% / XYZ100 -0.40%",
+        threshold: "SP500 and XYZ100 both <= -0.75%",
+      },
+    ],
   };
 }

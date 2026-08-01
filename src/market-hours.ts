@@ -1,8 +1,12 @@
 import type { Candle, ScannerConfig } from "./types";
 
 const EASTERN_TIME_ZONE = "America/New_York";
+const CRON_INTERVAL_MINUTES = 5;
+const MINUTES_PER_DAY = 24 * 60;
 const FINAL_HOUR_START_MINUTE = 15 * 60;
 const FINAL_HOUR_END_MINUTE = 16 * 60;
+const RTH_START_MINUTE = 9 * 60 + 30;
+const RTH_END_MINUTE = 16 * 60;
 const EASTERN_DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: EASTERN_TIME_ZONE,
   year: "numeric",
@@ -30,6 +34,14 @@ export interface ScheduleDecision {
   shouldRun: boolean;
   intervalMinutes: number;
   reason: string;
+}
+
+export type AnalysisSessionKind = "rth" | "overnight";
+
+export interface AnalysisSession {
+  candles: Candle[];
+  kind: AnalysisSessionKind;
+  notificationsEnabled: boolean;
 }
 
 /**
@@ -60,6 +72,36 @@ export function getScheduleDecision(
 }
 
 /**
+ * Find the prior Cron boundary that passed the scanner cadence gate.
+ *
+ * Walking the actual five-minute Cron ticks handles both sides of the
+ * 15-minute/5-minute final-hour transition without overlapping analysis
+ * windows or leaving candles between them.
+ */
+export function getPreviousScanTime(
+  timestamp: Date,
+  config: Pick<
+    ScannerConfig,
+    "regularScanMinutes" | "finalHourScanMinutes"
+  >,
+): Date {
+  for (
+    let minutesAgo = CRON_INTERVAL_MINUTES;
+    minutesAgo <= MINUTES_PER_DAY;
+    minutesAgo += CRON_INTERVAL_MINUTES
+  ) {
+    const candidate = new Date(
+      timestamp.getTime() - minutesAgo * 60 * 1_000,
+    );
+    if (getScheduleDecision(candidate, config).shouldRun) {
+      return candidate;
+    }
+  }
+
+  throw new Error("unable to find a prior scanner cadence boundary");
+}
+
+/**
  * Keep weekend status briefs quieter while preserving the configured weekday
  * cadence.
  */
@@ -86,6 +128,66 @@ export function filterCurrentSession(
     (candle) => getEasternDateKey(new Date(candle.startTime)) === currentDateKey,
   );
   return currentDateCandles.length > 0 ? currentDateCandles : [...candles];
+}
+
+/**
+ * Select a stable analysis session for the live perpetual market.
+ *
+ * RTH signals use the cash-market 09:30–16:00 New York anchor that is
+ * available in the historical SPX proxy. Outside RTH, candles remain
+ * available for status briefs, but notifications stay disabled until a
+ * separately validated overnight policy exists.
+ */
+export function selectAnalysisSession(
+  candles: readonly Candle[],
+  timestamp: Date,
+): AnalysisSession {
+  const eastern = getEasternTimeParts(timestamp);
+  const isWeekday = eastern.weekday !== "Sat" && eastern.weekday !== "Sun";
+  const isRthEvaluation =
+    isWeekday &&
+    eastern.minuteOfDay >= RTH_START_MINUTE &&
+    eastern.minuteOfDay <= RTH_END_MINUTE;
+
+  if (isRthEvaluation) {
+    const rthCandles = candles.filter((candle) => {
+      const candleTime = getEasternTimeParts(new Date(candle.startTime));
+      return (
+        candleTime.dateKey === eastern.dateKey &&
+        candleTime.minuteOfDay >= RTH_START_MINUTE &&
+        candleTime.minuteOfDay < RTH_END_MINUTE
+      );
+    });
+    return {
+      candles: rthCandles,
+      kind: "rth",
+      notificationsEnabled: true,
+    };
+  }
+
+  return {
+    candles: selectOvernightCandles(candles),
+    kind: "overnight",
+    notificationsEnabled: false,
+  };
+}
+
+function selectOvernightCandles(candles: readonly Candle[]): Candle[] {
+  let boundaryIndex = -1;
+  for (let index = candles.length - 1; index >= 0; index -= 1) {
+    const candle = candles[index];
+    if (candle === undefined) {
+      continue;
+    }
+    const candleTime = getEasternTimeParts(new Date(candle.startTime));
+    if (candleTime.minuteOfDay === RTH_END_MINUTE) {
+      boundaryIndex = index;
+      break;
+    }
+  }
+  return boundaryIndex < 0
+    ? [...candles]
+    : candles.slice(boundaryIndex);
 }
 
 function getEasternTimeParts(timestamp: Date): EasternTimeParts {
