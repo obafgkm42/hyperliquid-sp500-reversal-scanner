@@ -8,23 +8,40 @@ import re
 import tomllib
 from zoneinfo import ZoneInfo
 
-from reversal_scanner_backtest.models import Candle
+from reversal_scanner_backtest.cli import reinterpret_naive_local_candle
+from reversal_scanner_backtest.models import (
+    Candle,
+    ReversalLocation,
+    SignalPolicy,
+)
 from reversal_scanner_backtest.replay import (
     ReplaySettings,
     available_history,
+    build_delivery_decision,
+    is_request_boundary,
+    notification_delivery_time,
     should_evaluate_candle,
 )
 from reversal_scanner_backtest.validation import validate_candles
 from reversal_scanner_backtest import signal_engine
 
 
-def test_live_replay_uses_regular_and_final_hour_cadence() -> None:
+def test_live_replay_catches_up_every_completed_candle() -> None:
     settings = ReplaySettings(mode="live")
 
     assert should_evaluate_candle(candle_ending_before("2025-01-06T14:45:00-05:00"), settings) is True
-    assert should_evaluate_candle(candle_ending_before("2025-01-06T14:50:00-05:00"), settings) is False
+    assert should_evaluate_candle(candle_ending_before("2025-01-06T14:50:00-05:00"), settings) is True
     assert should_evaluate_candle(candle_ending_before("2025-01-06T15:05:00-05:00"), settings) is True
     assert should_evaluate_candle(candle_ending_before("2025-01-06T15:10:00-05:00"), settings) is True
+
+
+def test_live_requests_keep_regular_and_final_hour_cadence() -> None:
+    settings = ReplaySettings(mode="live")
+
+    assert is_request_boundary(candle_ending_before("2025-01-06T14:45:00-05:00"), settings) is True
+    assert is_request_boundary(candle_ending_before("2025-01-06T14:50:00-05:00"), settings) is False
+    assert is_request_boundary(candle_ending_before("2025-01-06T15:05:00-05:00"), settings) is True
+    assert is_request_boundary(candle_ending_before("2025-01-06T15:10:00-05:00"), settings) is True
 
 
 def test_live_replay_clips_history_to_request_lookback() -> None:
@@ -34,6 +51,56 @@ def test_live_replay_clips_history_to_request_lookback() -> None:
     retained = candle_ending_before("2025-01-06T05:05:00-05:00")
 
     assert available_history([too_old, retained, trigger], trigger, settings) == [retained, trigger]
+
+
+def test_live_delivery_waits_for_next_real_request_boundary() -> None:
+    settings = ReplaySettings(mode="live")
+    candle = candle_ending_before("2025-01-06T11:35:00-05:00")
+
+    delivered_at = notification_delivery_time(candle, settings)
+
+    assert datetime.fromtimestamp(
+        delivered_at / 1000,
+        tz=ZoneInfo("America/New_York"),
+    ).isoformat() == "2025-01-06T11:45:00-05:00"
+
+
+def test_delivery_revalidation_expires_a_stopped_signal() -> None:
+    settings = ReplaySettings(mode="live")
+    signal_candle = candle_ending_before(
+        "2025-01-06T11:35:00-05:00"
+    )
+    stopped = Candle(
+        start_time=signal_candle.end_time + 1,
+        end_time=signal_candle.end_time + 300_000,
+        open=100,
+        high=101,
+        low=94,
+        close=100,
+        volume=100,
+        trade_count=10,
+    )
+    delivery_bar = Candle(
+        start_time=stopped.end_time + 1 + 300_000,
+        end_time=stopped.end_time + 600_000,
+        open=100,
+        high=101,
+        low=99,
+        close=100,
+        volume=100,
+        trade_count=10,
+    )
+    signal = reversal_signal(signal_candle)
+
+    decision = build_delivery_decision(
+        [signal_candle, stopped, delivery_bar],
+        0,
+        signal,
+        settings,
+    )
+
+    assert decision.status == "invalidated_before_delivery"
+    assert decision.observed_at == delivery_bar.start_time
 
 
 def test_validation_reports_zero_volume_and_rejects_bad_ohlc() -> None:
@@ -55,6 +122,40 @@ def test_validation_reports_zero_volume_and_rejects_bad_ohlc() -> None:
     assert report.invalid_ohlc_rows == 1
     assert report.zero_volume_rate == 1
     assert any("VWAP will fall back" in warning for warning in report.warnings)
+
+
+def test_naive_chicago_timestamp_is_converted_with_dst() -> None:
+    winter = reinterpret_naive_local_candle(
+        candle_ending_before("2008-01-02T08:35:00+00:00"),
+        ZoneInfo("America/Chicago"),
+    )
+    summer = reinterpret_naive_local_candle(
+        candle_ending_before("2020-06-15T08:35:00+00:00"),
+        ZoneInfo("America/Chicago"),
+    )
+
+    assert datetime.fromtimestamp(
+        winter.start_time / 1000,
+        tz=ZoneInfo("America/New_York"),
+    ).strftime("%H:%M") == "09:30"
+    assert datetime.fromtimestamp(
+        summer.start_time / 1000,
+        tz=ZoneInfo("America/New_York"),
+    ).strftime("%H:%M") == "09:30"
+
+
+def test_rth_validation_rejects_misaligned_session_open() -> None:
+    candle = candle_ending_before("2025-01-06T04:35:00-05:00")
+
+    report = validate_candles(
+        [candle],
+        5,
+        "America/New_York",
+        "rth",
+    )
+
+    assert report.is_valid is False
+    assert report.session_open_mismatch_dates == 1
 
 
 def test_frozen_python_parameters_match_typescript_and_runtime_defaults() -> None:
@@ -100,4 +201,33 @@ def candle_ending_before(value: str, volume: float = 100) -> Candle:
         close=100,
         volume=volume,
         trade_count=10,
+    )
+
+
+def reversal_signal(candle: Candle) -> ReversalLocation:
+    """Build a simple delivery-revalidation signal."""
+
+    return ReversalLocation(
+        level="alert",
+        direction="bullish",
+        market="SPX",
+        price=100,
+        entry_low=99,
+        entry_high=101,
+        invalidation=95,
+        target=110,
+        session_high=110,
+        session_low=95,
+        vwap=105,
+        price_risk_reward=2,
+        confidence_score=80,
+        policy=SignalPolicy(
+            name="test",
+            role="bullish_reversal_zone",
+            alert_eligible=True,
+            watch_eligible=True,
+            reasons=[],
+        ),
+        reasons=[],
+        timestamp=candle.end_time,
     )

@@ -13,6 +13,7 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from reversal_scanner_backtest.models import Candle, ReversalLocation, Direction
+from reversal_scanner_backtest.replay import DeliveryDecision
 
 TouchOrderingMode = str
 EntryMode = Literal["signal-close", "next-open"]
@@ -30,6 +31,7 @@ class ExecutionAssumptions:
     entry_mode: EntryMode = "signal-close"
     slippage_points: float = 0
     round_trip_cost_points: float = 0
+    enforce_entry_zone: bool = True
 
     def validate(self) -> None:
         """Raise when execution costs or entry mode are invalid."""
@@ -77,6 +79,7 @@ class TradeResult:
     exit_reason: str
     ambiguous: bool
     eod_runner_contribution: float | None = None
+    exit_timestamp: int | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +113,12 @@ class ReversalEvent:
     signal_level: str
     direction: Direction
     entry_price: float
+    entry_low: float
+    entry_high: float
+    observed_at: str
+    observed_price: float
+    notification_latency_minutes: float
+    notification_status: str
     execution_entry_price: float | None
     execution_entry_time: str | None
     execution_status: str
@@ -195,6 +204,16 @@ class TradeStats:
     expectancy: float | None
     hit20_rate: float | None
     eod_runner_contribution: float | None
+
+
+@dataclass(frozen=True)
+class SinglePositionSummary:
+    """Execution results when only one conservative position may be open."""
+
+    executable_signals: int
+    selected_trades: int
+    skipped_overlapping: int
+    performance: TradeStats
 
 
 @dataclass(frozen=True)
@@ -304,9 +323,17 @@ def resolve_execution_entry(
     signal: ReversalLocation,
     same_day_future: list[Candle],
     assumptions: ExecutionAssumptions,
+    notification_status: str = "fresh",
 ) -> ExecutionEntry:
     """Resolve a signal-close or next-bar-open fill without lookahead."""
 
+    if notification_status != "fresh":
+        return ExecutionEntry(
+            status=f"notification_{notification_status}",
+            price=None,
+            timestamp=None,
+            candles=same_day_future,
+        )
     if assumptions.entry_mode == "signal-close":
         raw_price = signal.price
         timestamp = signal.timestamp
@@ -324,6 +351,16 @@ def resolve_execution_entry(
         timestamp = first_candle.start_time
         execution_candles = same_day_future
 
+    if (
+        assumptions.enforce_entry_zone
+        and not signal.entry_low <= raw_price <= signal.entry_high
+    ):
+        return ExecutionEntry(
+            status="outside_entry_zone_at_entry",
+            price=None,
+            timestamp=timestamp,
+            candles=execution_candles,
+        )
     if is_beyond_stop(signal.direction, raw_price, signal.invalidation):
         return ExecutionEntry(
             status="invalid_before_entry",
@@ -378,6 +415,7 @@ def build_reversal_event(
     candles_available_at_signal: list[Candle],
     future_candles: list[Candle],
     execution_assumptions: ExecutionAssumptions | None = None,
+    delivery_decision: DeliveryDecision | None = None,
 ) -> ReversalEvent:
     """Build path-based metrics for one frozen signal without lookahead."""
 
@@ -385,6 +423,17 @@ def build_reversal_event(
     assumptions.validate()
     session_date = date_key(signal.timestamp)
     same_day_future = [candle for candle in future_candles if date_key(candle.end_time) == session_date]
+    delivery = delivery_decision or DeliveryDecision(
+        observed_at=signal.timestamp + 1,
+        observed_price=signal.price,
+        status="fresh",
+        execution_candles=same_day_future,
+    )
+    same_day_execution_candles = [
+        candle
+        for candle in delivery.execution_candles
+        if date_key(candle.end_time) == session_date
+    ]
     eod = same_day_future[-1] if same_day_future else None
     eod_close = eod.close if eod else None
     risk_points = abs(signal.price - signal.invalidation)
@@ -399,7 +448,12 @@ def build_reversal_event(
     confirmation = confirmation_entry(signal, signal_candle, same_day_future, eod_close)
     second_sweep = second_sweep_entry(signal, signal_candle, same_day_future, eod_close)
     eastern = time_parts(signal.timestamp)
-    execution = resolve_execution_entry(signal, same_day_future, assumptions)
+    execution = resolve_execution_entry(
+        signal,
+        same_day_execution_candles,
+        assumptions,
+        delivery.status,
+    )
     execution_entry_price = execution.price
     execution_risk_points = (
         None
@@ -555,6 +609,15 @@ def build_reversal_event(
         signal_level=signal.level,
         direction=signal.direction,
         entry_price=signal.price,
+        entry_low=signal.entry_low,
+        entry_high=signal.entry_high,
+        observed_at=iso_timestamp(delivery.observed_at),
+        observed_price=delivery.observed_price,
+        notification_latency_minutes=minutes_between(
+            signal.timestamp + 1,
+            delivery.observed_at,
+        ),
+        notification_status=delivery.status,
         execution_entry_price=execution_entry_price,
         execution_entry_time=(
             None
@@ -789,6 +852,7 @@ def build_placebo_comparison(
                     signal,
                     session[position + 1 :],
                     assumptions,
+                    event.notification_latency_minutes,
                 )
             )
         sample_metrics = summarize_placebo_samples(sampled)
@@ -833,6 +897,7 @@ def build_placebo_sample(
     signal: ReversalLocation,
     future_candles: list[Candle],
     execution_assumptions: ExecutionAssumptions | None = None,
+    notification_latency_minutes: float = 0,
 ) -> PlaceboSample:
     """Calculate only the event metrics consumed by placebo summaries."""
 
@@ -845,7 +910,17 @@ def build_placebo_sample(
         signal.timestamp,
     )
     assumptions = execution_assumptions or ExecutionAssumptions()
-    execution = resolve_execution_entry(signal, future_candles, assumptions)
+    delivery = delivery_decision_for_latency(
+        signal,
+        future_candles,
+        notification_latency_minutes,
+    )
+    execution = resolve_execution_entry(
+        signal,
+        delivery.execution_candles,
+        assumptions,
+        delivery.status,
+    )
     if execution.price is None:
         current_stop = None
     else:
@@ -874,6 +949,65 @@ def build_placebo_sample(
     )
 
 
+def delivery_decision_for_latency(
+    signal: ReversalLocation,
+    future_candles: list[Candle],
+    notification_latency_minutes: float,
+) -> DeliveryDecision:
+    """Apply a real event's delivery delay to one placebo signal."""
+
+    observed_at = (
+        signal.timestamp
+        + 1
+        + round(notification_latency_minutes * 60_000)
+    )
+    delivery_index = next(
+        (
+            index
+            for index, candle in enumerate(future_candles)
+            if candle.start_time >= observed_at
+        ),
+        None,
+    )
+    if delivery_index is None:
+        return DeliveryDecision(
+            observed_at=observed_at,
+            observed_price=(
+                future_candles[-1].close
+                if future_candles
+                else signal.price
+            ),
+            status="no_delivery_bar",
+            execution_candles=[],
+        )
+    observed_price = (
+        signal.price
+        if delivery_index == 0
+        else future_candles[delivery_index - 1].close
+    )
+    pre_delivery = future_candles[:delivery_index]
+    if any(
+        is_stop_touched(signal.direction, candle, signal.invalidation)
+        for candle in pre_delivery
+    ):
+        status = "invalidated_before_delivery"
+    elif any(
+        is_target_touched(signal.direction, candle, signal.target)
+        for candle in pre_delivery
+    ):
+        status = "target_reached_before_delivery"
+    elif not signal.entry_low <= observed_price <= signal.entry_high:
+        status = "outside_entry_zone"
+    else:
+        status = "fresh"
+    return DeliveryDecision(
+        observed_at=observed_at,
+        observed_price=observed_price,
+        status=status,
+        execution_candles=future_candles[delivery_index:],
+    )
+
+
 def summarize_placebo_samples(
     samples: list[PlaceboSample],
 ) -> dict[str, float | None]:
@@ -899,6 +1033,12 @@ def reversal_events_to_csv(events: list[ReversalEvent]) -> str:
         "signal_level",
         "direction",
         "entry_price",
+        "entry_low",
+        "entry_high",
+        "observed_at",
+        "observed_price",
+        "notification_latency_minutes",
+        "notification_status",
         "execution_entry_price",
         "execution_entry_time",
         "execution_status",
@@ -1246,12 +1386,19 @@ def simulate_stop_target(
                 "gap_stop",
                 False,
                 assumptions,
+                candle.end_time,
             )
         stop_touched = is_stop_touched(direction, candle, stop)
         target_touched = target is not None and is_target_touched(direction, candle, target)
         if stop_touched and target_touched:
             if mode == "ambiguous_excluded":
-                return TradeResult(points=0, r=None, exit_reason="ambiguous", ambiguous=True)
+                return TradeResult(
+                    points=0,
+                    r=None,
+                    exit_reason="ambiguous",
+                    ambiguous=True,
+                    exit_timestamp=candle.end_time,
+                )
             exit_price = stop if mode == "conservative" else target
             return trade_result(
                 direction,
@@ -1261,6 +1408,7 @@ def simulate_stop_target(
                 "same_candle_touch",
                 True,
                 assumptions,
+                candle.end_time,
             )
         if stop_touched:
             return trade_result(
@@ -1271,6 +1419,7 @@ def simulate_stop_target(
                 "stop",
                 False,
                 assumptions,
+                candle.end_time,
             )
         if target_touched and target is not None:
             return trade_result(
@@ -1281,6 +1430,7 @@ def simulate_stop_target(
                 "target",
                 False,
                 assumptions,
+                candle.end_time,
             )
     return (
         None
@@ -1293,6 +1443,7 @@ def simulate_stop_target(
             "eod",
             False,
             assumptions,
+            candles[-1].end_time if candles else None,
         )
     )
 
@@ -1614,6 +1765,64 @@ def trade_stats(raw_results: list[TradeResult | None]) -> TradeStats:
     )
 
 
+def build_single_position_summary(
+    events: list[ReversalEvent],
+) -> SinglePositionSummary:
+    """Keep the first executable signal while a prior position is active."""
+
+    executable = [
+        event
+        for event in events
+        if event.execution_entry_time is not None
+        and event.current_stop.get("conservative") is not None
+    ]
+    ordered = sorted(
+        executable,
+        key=lambda event: event.execution_entry_time or "",
+    )
+    selected: list[TradeResult] = []
+    active_until = -1
+    skipped_overlapping = 0
+    for event in ordered:
+        entry_time = parse_iso_timestamp(event.execution_entry_time)
+        result = event.current_stop["conservative"]
+        if result is None:
+            continue
+        if entry_time <= active_until:
+            skipped_overlapping += 1
+            continue
+        selected.append(result)
+        active_until = result.exit_timestamp or entry_time
+    return SinglePositionSummary(
+        executable_signals=len(executable),
+        selected_trades=len(selected),
+        skipped_overlapping=skipped_overlapping,
+        performance=trade_stats(selected),
+    )
+
+
+def render_single_position_markdown(
+    summary: SinglePositionSummary,
+) -> str:
+    """Render a compact capital-constrained execution summary."""
+
+    return "\n".join(
+        [
+            "# Single-Position Execution",
+            "",
+            "Conservative current-stop policy with at most one open position.",
+            "",
+            f"Executable signals: {summary.executable_signals}",
+            f"Selected trades: {summary.selected_trades}",
+            f"Skipped overlapping signals: {summary.skipped_overlapping}",
+            f"Average points: {format_number(summary.performance.avg_points)}",
+            f"Average R: {format_number(summary.performance.average_r)}",
+            f"Profit factor: {format_number(summary.performance.profit_factor)}",
+            f"Maximum losing streak: {summary.performance.max_losing_streak}",
+        ]
+    ) + "\n"
+
+
 def stop_out_summary(events: list[ReversalEvent]) -> StopOutSummary:
     """Aggregate stop-out diagnostics."""
 
@@ -1646,8 +1855,12 @@ def fake_signal_from_event(event: ReversalEvent, candle: Candle) -> ReversalLoca
         direction=event.direction,
         market="placebo",
         price=candle.close,
-        entry_low=candle.close,
-        entry_high=candle.close,
+        entry_low=(
+            candle.close - (event.entry_price - event.entry_low)
+        ),
+        entry_high=(
+            candle.close + (event.entry_high - event.entry_price)
+        ),
         invalidation=invalidation,
         target=target,
         session_high=candle.high,
@@ -1900,6 +2113,7 @@ def trade_result(
     exit_reason: str,
     ambiguous: bool,
     execution_assumptions: ExecutionAssumptions | None = None,
+    exit_timestamp: int | None = None,
 ) -> TradeResult:
     """Build a trade result from entry and exit prices."""
 
@@ -1913,14 +2127,33 @@ def trade_result(
         directional_points(direction, entry_price, executable_exit_price)
         - assumptions.round_trip_cost_points
     )
-    return TradeResult(points=points, r=points / risk_points if risk_points > 0 else None, exit_reason=exit_reason, ambiguous=ambiguous)
+    return TradeResult(
+        points=points,
+        r=points / risk_points if risk_points > 0 else None,
+        exit_reason=exit_reason,
+        ambiguous=ambiguous,
+        exit_timestamp=exit_timestamp,
+    )
 
 
 def combine_trade_results(results: list[TradeResult], exit_reason: str, risk_points: float) -> TradeResult:
     """Combine retry attempts into one policy result."""
 
     points = sum(result.points for result in results)
-    return TradeResult(points=points, r=points / risk_points if risk_points > 0 else None, exit_reason=exit_reason, ambiguous=any(result.ambiguous for result in results))
+    return TradeResult(
+        points=points,
+        r=points / risk_points if risk_points > 0 else None,
+        exit_reason=exit_reason,
+        ambiguous=any(result.ambiguous for result in results),
+        exit_timestamp=max(
+            (
+                result.exit_timestamp
+                for result in results
+                if result.exit_timestamp is not None
+            ),
+            default=None,
+        ),
+    )
 
 
 def find_stop_index(direction: Direction, stop: float, candles: list[Candle], start_index: int) -> int:
@@ -2206,6 +2439,17 @@ def iso_timestamp(timestamp: int) -> str:
     """Return UTC ISO timestamp with millisecond precision."""
 
     return datetime.fromtimestamp(timestamp / 1000, tz=UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def parse_iso_timestamp(value: str | None) -> int:
+    """Parse one serialized UTC event timestamp into epoch milliseconds."""
+
+    if value is None:
+        raise ValueError("timestamp is required")
+    return int(
+        datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        * 1000
+    )
 
 
 def parse_iso_millis(value: str) -> int:

@@ -11,6 +11,7 @@ from reversal_scanner_backtest.reversal_study import (
     build_cluster_bootstrap_summary,
     build_placebo_sample,
     build_reversal_event,
+    build_single_position_summary,
     compare_metric,
     summarize_placebo_samples,
     summarize_reversal_events,
@@ -114,7 +115,10 @@ def test_summary_includes_retry_and_delayed_entry_policies() -> None:
 
 def test_same_candle_stop_and_target_ambiguity_modes() -> None:
     signal_candle = candle(10, 100, 101, 99, 100, 100)
-    signal = signal_from_candle(signal_candle, "bullish", 95, 105)
+    signal = replace(
+        signal_from_candle(signal_candle, "bullish", 95, 105),
+        entry_high=101,
+    )
     event = build_reversal_event(signal, signal_candle, [signal_candle], [candle(11, 100, 106, 94, 101, 100)])
 
     assert event.current_stop["conservative"].points == -5
@@ -128,7 +132,10 @@ def test_same_candle_stop_and_target_ambiguity_modes() -> None:
 
 def test_next_open_execution_applies_slippage_cost_and_actual_risk() -> None:
     signal_candle = candle(10, 100, 101, 99, 100, 100)
-    signal = signal_from_candle(signal_candle, "bullish", 95, 105)
+    signal = replace(
+        signal_from_candle(signal_candle, "bullish", 95, 105),
+        entry_high=101,
+    )
     event = build_reversal_event(
         signal,
         signal_candle,
@@ -145,6 +152,22 @@ def test_next_open_execution_applies_slippage_cost_and_actual_risk() -> None:
     assert event.execution_entry_price == 101.25
     assert event.execution_risk_points == pytest.approx(6.6)
     assert event.current_stop["conservative"].points == pytest.approx(3.4)
+
+
+def test_next_open_outside_frozen_entry_zone_is_not_filled() -> None:
+    signal_candle = candle(10, 100, 101, 99, 100, 100)
+    signal = signal_from_candle(signal_candle, "bullish", 95, 110)
+
+    event = build_reversal_event(
+        signal,
+        signal_candle,
+        [signal_candle],
+        [candle(11, 101, 106, 100, 105, 100)],
+        ExecutionAssumptions(entry_mode="next-open"),
+    )
+
+    assert event.execution_status == "outside_entry_zone_at_entry"
+    assert event.execution_entry_price is None
 
 
 def test_gap_through_stop_uses_worse_opening_fill() -> None:
@@ -302,7 +325,11 @@ def test_walk_forward_uses_past_train_and_non_overlapping_test_months() -> None:
     ]
     events = [replace(base_event, date=value) for value in dates]
 
-    summary = build_walk_forward_summary(events, train_months=12, test_months=6)
+    summary = build_walk_forward_summary(
+        events,
+        train_months=12,
+        test_months=6,
+    )
 
     assert summary is not None
     assert summary.fold_count == 1
@@ -310,6 +337,58 @@ def test_walk_forward_uses_past_train_and_non_overlapping_test_months() -> None:
     assert summary.folds[0].test.events == 6
     assert summary.folds[0].test_start == "2025-01-01"
     assert summary.folds[0].test_end_exclusive == "2025-07-01"
+
+
+def test_walk_forward_uses_explicit_dataset_calendar_anchor() -> None:
+    from datetime import date
+
+    signal_candle = candle(10, 100, 102, 98, 100, 100)
+    signal = signal_from_candle(signal_candle, "bullish", 97, 125)
+    base_event = build_reversal_event(
+        signal,
+        signal_candle,
+        [signal_candle],
+        [candle(11, 100, 104, 99, 103, 100)],
+    )
+    events = [
+        replace(base_event, date="2024-04-15"),
+        replace(base_event, date="2025-02-15"),
+    ]
+
+    summary = build_walk_forward_summary(
+        events,
+        train_months=12,
+        test_months=6,
+        calendar_start=date(2024, 1, 1),
+        calendar_end=date(2025, 6, 30),
+    )
+
+    assert summary is not None
+    assert summary.folds[0].train_start == "2024-01-01"
+    assert summary.folds[0].test_start == "2025-01-01"
+
+
+def test_single_position_summary_skips_overlapping_executions() -> None:
+    signal_candle = candle(10, 100, 101, 99, 100, 100)
+    signal = replace(
+        signal_from_candle(signal_candle, "bullish", 95, 105),
+        entry_high=101,
+    )
+    event = build_reversal_event(
+        signal,
+        signal_candle,
+        [signal_candle],
+        [
+            candle(11, 100, 102, 99, 101, 100),
+            candle(12, 101, 106, 100, 105, 100),
+        ],
+    )
+
+    summary = build_single_position_summary([event, event])
+
+    assert summary.executable_signals == 2
+    assert summary.selected_trades == 1
+    assert summary.skipped_overlapping == 1
 
 
 def candle(index: int, open_: float, high: float, low: float, close: float, volume: float) -> Candle:

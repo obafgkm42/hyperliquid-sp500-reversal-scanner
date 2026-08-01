@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +27,7 @@ class DatasetValidationReport:
     weekend_candle_rate: float | None
     session_date_count: int
     irregular_session_intervals: int
+    session_open_mismatch_dates: int
     expected_interval_minutes: int
     warnings: list[str]
     errors: list[str]
@@ -56,8 +58,25 @@ def validate_candles(
     candles: list[Candle],
     expected_interval_minutes: int,
     session_time_zone: str,
+    session_profile: str = "unrestricted",
 ) -> DatasetValidationReport:
     """Validate ordering, OHLC integrity, volume, and intraday cadence."""
+
+    return validate_candle_stream(
+        candles,
+        expected_interval_minutes,
+        session_time_zone,
+        session_profile,
+    )
+
+
+def validate_candle_stream(
+    candles: Iterable[Candle],
+    expected_interval_minutes: int,
+    session_time_zone: str,
+    session_profile: str = "unrestricted",
+) -> DatasetValidationReport:
+    """Validate a candle stream without retaining the full raw dataset."""
 
     if expected_interval_minutes <= 0:
         raise ValueError("expected_interval_minutes must be positive")
@@ -73,11 +92,23 @@ def validate_candles(
     irregular_session_intervals = 0
     weekend_rows = 0
     session_dates: set[str] = set()
+    first_start_minute_by_date: dict[str, int] = {}
+    candle_count = 0
 
     previous: Candle | None = None
     for candle in candles:
+        candle_count += 1
         local_timestamp = datetime.fromtimestamp(candle.end_time / 1000, tz=time_zone)
         session_dates.add(local_timestamp.strftime("%Y-%m-%d"))
+        start_timestamp = datetime.fromtimestamp(
+            candle.start_time / 1000,
+            tz=time_zone,
+        )
+        date_value = start_timestamp.strftime("%Y-%m-%d")
+        first_start_minute_by_date.setdefault(
+            date_value,
+            start_timestamp.hour * 60 + start_timestamp.minute,
+        )
         if local_timestamp.weekday() >= 5:
             weekend_rows += 1
         if candle.end_time in seen_end_times:
@@ -102,8 +133,23 @@ def validate_candles(
             zero_volume_rows += 1
         previous = candle
 
-    zero_volume_rate = None if not candles else zero_volume_rows / len(candles)
-    weekend_candle_rate = None if not candles else weekend_rows / len(candles)
+    zero_volume_rate = (
+        None if candle_count == 0 else zero_volume_rows / candle_count
+    )
+    weekend_candle_rate = (
+        None if candle_count == 0 else weekend_rows / candle_count
+    )
+    session_open_mismatch_dates = (
+        0
+        if session_profile != "rth"
+        else len(
+            [
+                minute
+                for minute in first_start_minute_by_date.values()
+                if minute != 9 * 60 + 30
+            ]
+        )
+    )
     warnings: list[str] = []
     errors: list[str] = []
     if zero_volume_rate is not None and zero_volume_rate >= 0.99:
@@ -114,7 +160,7 @@ def validate_candles(
         warnings.append(
             f"found {irregular_session_intervals} unexpected intervals inside session dates"
         )
-    if candles and weekend_rows == 0:
+    if candle_count > 0 and weekend_rows == 0:
         warnings.append(
             "dataset contains no weekend candles and cannot validate the live 24/7 schedule"
         )
@@ -130,9 +176,23 @@ def validate_candles(
         )
     if negative_volume_rows > 0:
         errors.append(f"found {negative_volume_rows} rows with negative volume")
+    if session_open_mismatch_dates > 0:
+        warnings.append(
+            f"found {session_open_mismatch_dates} partial session dates that do not start at 09:30 in {session_time_zone}"
+        )
+    if (
+        session_profile == "rth"
+        and first_start_minute_by_date
+        and session_open_mismatch_dates
+        / len(first_start_minute_by_date)
+        >= 0.01
+    ):
+        errors.append(
+            "at least 1% of session dates do not start at 09:30; verify source timestamp conversion"
+        )
 
     return DatasetValidationReport(
-        candle_count=len(candles),
+        candle_count=candle_count,
         duplicate_end_times=duplicate_end_times,
         out_of_order_rows=out_of_order_rows,
         invalid_ohlc_rows=invalid_ohlc_rows,
@@ -142,6 +202,7 @@ def validate_candles(
         weekend_candle_rate=weekend_candle_rate,
         session_date_count=len(session_dates),
         irregular_session_intervals=irregular_session_intervals,
+        session_open_mismatch_dates=session_open_mismatch_dates,
         expected_interval_minutes=expected_interval_minutes,
         warnings=warnings,
         errors=errors,
