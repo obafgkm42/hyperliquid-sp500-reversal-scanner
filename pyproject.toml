@@ -18,6 +18,7 @@ portfolio = [
 
 [project.scripts]
 reversal-scanner-backtest = "reversal_scanner_backtest.cli:main"
+fragility-backtest = "reversal_scanner_backtest.fragility_cli:main"
 
 [dependency-groups]
 dev = [

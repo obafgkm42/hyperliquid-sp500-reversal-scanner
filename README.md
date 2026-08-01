@@ -38,24 +38,52 @@ The scanner operates on the Hyperliquid `xyz:SP500` perpetual market. That
 market is not the official cash SPX index. Basis, funding, oracle, liquidity,
 and venue-specific price differences are possible.
 
+## Periodic market fragility status
+
+Every due status brief also reports an independent market-repair state:
+
+- `RESILIENT`: zero or one repair mechanism is under stress;
+- `FRAGILE`: two mechanisms are under stress;
+- `BREAKING`: three mechanisms are under stress;
+- `PANIC`: four or more mechanisms are under stress; and
+- `UNKNOWN`: fewer than four indicators are available.
+
+The live indicator set combines four SP500 candle diagnostics with two
+cross-market diagnostics:
+
+- current-session loss;
+- persistent displacement below volume-weighted price;
+- latest close location inside the observed range;
+- a volatility-adjusted cluster of large five-minute losses;
+- breadth across AAPL, MSFT, NVDA, AMZN, GOOGL, META, and TSLA; and
+- simultaneous weakness in Hyperliquid `xyz:SP500` and `xyz:XYZ100`.
+
+The ordinal `0–100` score is a readable failure-count scale, not a probability
+of a crash or a short recommendation. The feature does not change the frozen
+reversal alert thresholds. If the cross-market metadata request fails, the
+brief remains available with four price-only indicators and explicitly labels
+the data coverage as partial. Scheduled `BREAKING` and `PANIC` briefs mention
+`@everyone`; lower-severity briefs do not.
+
 ## Why bullish and bearish signals are asymmetric
 
 The current policy treats bullish bottom-reversal candidates as the primary
 research class. Bearish top-reversal candidates are retained only under a
 stricter crash/stress-monitor policy.
 
-That choice is based on one schema-v2 research run covering 2020–2026:
+The asymmetric policy was selected by earlier research and is frozen here for
+comparison. The current schema-v3 delivery-aware validation covers 2008–2026:
 
-| Direction | Events | MFE at least 20 points | EOD average | Current-stop PF |
-| --- | ---: | ---: | ---: | ---: |
-| Bullish bottom reversal | 65 | 36.92% | 0.68 points | 1.04 |
-| Bearish top/crash monitor | 11 | 9.09% | -2.16 points | 0.54 |
+| Direction | Signals | Executed trades | MFE at least 20 points | EOD average | Current-stop PF |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Bullish bottom reversal | 468 | 259 | 14.74% | -0.21 points | 0.82 |
+| Bearish top/crash monitor | 99 | 74 | 4.04% | -0.38 points | 0.91 |
 
-The bullish side had better forward-outcome metrics in that sample, but this is
-not a calibrated top/bottom accuracy estimate. The classes are imbalanced, the
-dataset has no usable volume, and the combined non-overlapping walk-forward
-current-stop profit factor was `0.71`. The result does **not** clear the
-project's promotion gate for a tradable strategy.
+The bullish side still has better raw MFE, but both executed directions lose
+under the frozen current-stop policy. The full-sample PF is `0.83`, the
+24-month-context/6-month-test rolling PF is `0.86`, and the single-position PF
+is `0.84`. The asymmetric rule remains frozen for comparison; these results do
+**not** validate it as a tradable edge.
 
 See [Current evidence](docs/current-evidence.md) for the assumptions,
 limitations, and reproducibility metadata. Do not quote the directional table
@@ -80,6 +108,17 @@ asymmetric regime policy
       |
       v
 Discord webhook watch / alert / brief
+
+Due brief or authenticated manual scan
+      |
+      v
+one Hyperliquid metaAndAssetCtxs request
+      |
+      v
+price repair + breadth + cross-index failure count
+      |
+      v
+RESILIENT / FRAGILE / BREAKING / PANIC status
 ```
 
 The live Worker stays in TypeScript under `src/`. Local event-study and
@@ -96,8 +135,22 @@ gate:
 - status briefs every `BRIEF_INTERVAL_MINUTES` (default `30`); and
 - New York weekends throttled to at most once per hour.
 
-The final-hour time-zone check only aligns the faster cadence with the New York
-cash-market close. Hyperliquid scanning otherwise remains near-24/7.
+Each scheduled scan makes one Hyperliquid candle request, then evaluates every
+newly completed five-minute candle since the previous scheduled scan. This
+catch-up window preserves signal discovery without tripling API request volume.
+Before Discord delivery, the Worker checks that the frozen stop and target were
+not touched and that the latest completed price remains inside the entry zone.
+Expired opportunities are logged but not sent.
+
+A due 30-minute brief makes one additional `metaAndAssetCtxs` request for the
+cross-market diagnostics. Non-brief alert scans still make only the original
+candle request. The authenticated manual `/scan` endpoint includes the same
+market-fragility snapshot without sending Discord notifications.
+
+Trade-quality alerts use a 09:30–16:00 New York RTH session so opening range,
+VWAP, and historical validation have the same anchor. Hyperliquid remains
+monitored outside RTH for status briefs, but overnight trade alerts stay
+disabled until a separate overnight policy has been validated.
 
 ## Configuration
 
@@ -121,14 +174,17 @@ LANGUAGE = "zh"
 For local development, copy `.env.example` to `.dev.vars`. Never commit the
 real webhook URL or token.
 
-An optional `SCANNER_STATE` KV binding makes version notices exactly once per
-deployed version:
+A `SCANNER_STATE` KV binding is required for durable failed-scan recovery,
+cross-invocation signal deduplication, and exactly-once version notices:
 
 ```toml
 [[kv_namespaces]]
 binding = "SCANNER_STATE"
 id = "replace-with-kv-namespace-id"
 ```
+
+Without this binding the Worker still runs, but it logs a degraded-mode warning
+and falls back to the theoretical prior schedule boundary.
 
 ## Development
 
@@ -196,16 +252,42 @@ uv run reversal-scanner-backtest \
 
 Generated outputs under `backtest/` are ignored by Git.
 
+Run the separate market-fragility classifier study on lawfully obtained
+five-minute SPX candles:
+
+```bash
+uv run fragility-backtest \
+  --input path/to/SPX_full_5min_CT.json \
+  --output-dir backtest/fragility-price-only-v1 \
+  --source-label selected-local-SPX-5m-cache \
+  --source-timezone America/Chicago \
+  --source-timestamp-mode naive-local
+```
+
+The first version replays the four price indicators and leaves unavailable
+breadth/cross-index inputs explicitly missing. It records the data hash,
+thresholds, VWAP mode, forward-path labels, moving-block intervals, annual
+slices, and rolling stability. See
+[Market fragility backtest methodology](docs/fragility-backtest-methodology.md).
+
 ## Research contract
 
-The schema-v2 runner:
+The schema-v3 runner:
 
 - records the dataset SHA-256 and validation warnings;
 - separates signal-close MFE/MAE from executable next-open trade metrics;
+- models the production request boundary and notification latency;
+- expires signals that leave the entry zone or touch stop/target before delivery;
+- supports DST-aware repair of legacy naive-local timestamp epochs;
 - models gap-through stops, adverse slippage, and round-trip costs;
 - reports bullish and bearish directions separately;
+- reports a conservative single-position execution layer;
 - uses session-cluster confidence intervals; and
-- emits non-overlapping walk-forward summaries.
+- emits fixed-calendar 24-month-context/6-month-test rolling OOS summaries.
+
+The periodic fragility state remains a transparent classifier diagnostic. Its
+schema-v1 event study is methodologically separate from strategy P&L and does
+not by itself authorize short or option trades.
 
 Bring your own lawfully obtained candle data. A Hugging Face helper is included
 for downloading a specifically selected dataset file, but every dataset has

@@ -1,62 +1,136 @@
 # Current Evidence and Limitations
 
-This document records the reviewed research run used to justify the
-asymmetric live policy. It is a descriptive event study, not actual trading
-performance and not proof that the scanner has a durable edge.
+This document records the schema-v3 delivery-aware validation of the frozen
+SP500 reversal-zone rule. It remains a historical proxy study, not actual
+trading performance or proof of a durable edge.
 
 ## Dataset and replay contract
 
 - Market label: `SPX` historical proxy
-- Coverage: January 2020 through July 2026
-- Five-minute candles: `130,817`
-- Dataset SHA-256: `29ef8459e29a0e82c8436963d4d50dcf1605835fc19ef01976a89ecaddc41d3d`
-- Schema: `2`
-- Replay: production-style 15-minute cadence, accelerating to five minutes in
-  the New York final hour, with an 18-hour visible lookback
-- Signal scope: strict alerts
-- Entry: next bar open
+- Coverage: January 2008 through July 2026
+- Raw five-minute candles: `371,552`
+- RTH replay candles: `361,773`
+- Raw dataset SHA-256:
+  `0374790bd961407ba5674f160d43f42f27354bce5dd6924c088689a4c25b627b`
+- Schema: `3`
+- Source timestamps: legacy naive Central wall clock repaired with
+  `America/Chicago` IANA/DST rules
+- Session: 09:30–16:00 `America/New_York`
+- Replay: 15-minute requests, five-minute requests during 15:00–16:00 ET,
+  catch-up evaluation of every completed candle
+- Entry: first available delivery-time bar open, only while still inside the
+  frozen entry zone
 - Slippage: `0.25` underlying points per fill
 - Round-trip cost: `0.10` underlying points
-- Gap-through-stop handling: worse opening price
+- Walk-forward-style view: fixed-calendar 24-month context followed by
+  non-overlapping six-month test windows
 
-The historical proxy is not the live Hyperliquid market. It contains no usable
-volume, so VWAP falls back to average close. It contains no weekend candles and
-has 174 unexpected within-session intervals. Those limitations reduce its
-ability to reproduce the live near-24/7 scanner.
+The data has zero usable volume, no weekend candles, 281 unexpected
+within-session intervals, and two partial session dates. VWAP therefore falls
+back to average close. It cannot reproduce Hyperliquid perpetual basis,
+funding, volume, spread, liquidity, or overnight behavior.
+
+## Delivery and execution
+
+The replay found 567 strict-alert signals:
+
+| Delivery/execution status | Signals |
+| --- | ---: |
+| Filled | 333 |
+| Outside entry zone at notification | 163 |
+| Invalidation touched before notification | 47 |
+| Next open outside entry zone | 15 |
+| No same-session delivery bar | 9 |
+
+The conservative current-stop result for the 333 filled trades was:
+
+- average: `-0.44` points;
+- average R: `-0.115R`;
+- profit factor: `0.83`;
+- win rate: `28.23%`; and
+- maximum losing streak: `17`.
+
+The session-cluster bootstrap PF interval was `0.57–1.20`; current-stop average
+points ranged from `-1.23` to `+0.50`. The interval includes both losing and
+profitable outcomes, while the point estimate remains below break-even.
 
 ## Directional results
 
-| Direction | Events | MFE at least 20 points | EOD average | Stop average | Stop PF |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Bullish bottom reversal | 65 | 36.92% | 0.68 | 0.17 | 1.04 |
-| Bearish top/crash monitor | 11 | 9.09% | -2.16 | -1.35 | 0.54 |
+| Direction | Signals | Executed | MFE at least 20 | EOD average | Stop average | Stop PF |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Bullish reversal | 468 | 259 | 14.74% | -0.21 | -0.52 | 0.82 |
+| Bearish crash monitor | 99 | 74 | 4.04% | -0.38 | -0.18 | 0.91 |
 
-The bullish class performed better on these forward-outcome measures. Calling
-it “more accurate” would overstate the evidence because the study does not use
-a calibrated top/bottom label, the sample sizes differ materially, and the
-observations are sparse.
+Bullish signals show better raw MFE, but neither direction is profitable under
+the executable current-stop policy.
 
-## Combined stability result
+## Rolling and portfolio constraints
 
-The ten non-overlapping six-month test windows contained 62 events in total:
+The 33 fixed-calendar test windows contained 488 signals and 296 executed
+trades:
 
-- MFE at least 20 points: `30.65%`
-- EOD average: `-1.98` points
-- current-stop average: `-1.18` points
-- current-stop profit factor: `0.71`
+- MFE at least 20 points: `14.14%`;
+- EOD average: `-0.01` points;
+- current-stop average: `-0.39` points; and
+- current-stop PF: `0.86`.
 
-The full-sample current-stop profit factor was `0.99`, with a session-cluster
-bootstrap interval that crossed both loss and profit. These results do not meet
-the project's promotion requirements for a tradable strategy.
+The context rows do not train or select parameters. This is rolling
+out-of-time stability reporting, not walk-forward optimization.
+
+A single-position constraint selected 329 of 333 executable trades and skipped
+four overlaps. Its average was `-0.43` points, average R was `-0.117R`, and PF
+was `0.84`.
+
+## Placebo interpretation
+
+The real signals had better raw MFE than matched random locations, but also
+worse median MAE. Executable current-stop PF ranked only at the `59.4`
+percentile of the 1,000 placebo runs, and average points ranked at the `44.0`
+percentile.
+
+Only 178 of 567 signals had full volatility matches; 389 used the weaker
+time-only fallback. Placebo results therefore support a price-location effect,
+not a demonstrated executable edge.
+
+## Periodic fragility classifier
+
+The live Worker now reports a separate `RESILIENT` / `FRAGILE` / `BREAKING` /
+`PANIC` market-repair state in periodic briefs. It counts transparent price,
+VWAP, tail, breadth, and cross-index failures and does not alter the frozen
+reversal signal gate.
+
+The separate schema-v1 price-only event study replayed 60,262 scheduled briefs
+across 4,653 sessions from January 2008 through July 2026. Four price indicators
+were available; historical `xyz:XYZ100` and constituent breadth remained
+unavailable rather than being reconstructed with survivor-biased proxies.
+
+| State | Observations | 120m >= 1% downside | Five-session >= 2% downside |
+| --- | ---: | ---: | ---: |
+| Resilient | 46,819 | 3.90% | 28.04% |
+| Fragile | 9,535 | 4.94% | 29.89% |
+| Breaking | 3,462 | 11.20% | 48.17% |
+| Panic | 446 | 25.98% | 65.25% |
+
+The ordered state is informative, especially at `BREAKING` and `PANIC`.
+`FRAGILE` alone is weakly separated from `RESILIENT`: their moving-block 95%
+intervals overlap at both headline horizons. Treating every `FRAGILE`-or-worse
+brief as a downside prediction produced 6.96% precision, 33.56% recall, and
+1.78x lift for a 1% 120-minute downside path. For a 2% five-session downside
+path it produced 35.77% precision, 26.83% recall, and 1.28x lift.
+
+The study uses the zero-volume close-mean fallback, so it is not yet a true
+VWAP validation. Its score remains an ordinal diagnostic, not a calibrated
+crash probability, strategy return, or approved live trading gate. The
+canonical artifacts are under
+`backtest/fragility-price-only-v1-2008-2026/`; the frozen methodology is in
+`docs/fragility-backtest-methodology.md`.
 
 ## Permitted conclusion
 
-The current evidence supports only this limited statement:
+The frozen rule identifies locations with more upside excursion than matched
+random timestamps, but that excursion does not survive delivery timing,
+entry-zone, stop, cost, and single-position constraints as positive
+expectancy. The current strategy does not clear the project's promotion gate.
 
-> In this historical proxy sample, bullish rejection candidates had better
-> forward-outcome metrics than bearish candidates, so the live policy treats
-> bullish setups as the primary research class and bearish setups as a stricter
-> crash/stress monitor.
-
-It does not support claims of profitability, calibrated accuracy, future
-performance, option P&L, or investment suitability.
+No claim of profitability, calibrated accuracy, future performance, option
+P&L, or investment suitability is supported.

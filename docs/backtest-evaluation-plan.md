@@ -30,7 +30,7 @@ statistical confidence interval.
 
 ## Reproducible Runner
 
-The default CLI contract uses schema version 2:
+The default CLI contract uses schema version 3:
 
 ```bash
 uv run reversal-scanner-backtest \
@@ -40,8 +40,12 @@ uv run reversal-scanner-backtest \
   --replay-mode live \
   --entry-mode next-open \
   --source-timezone America/Chicago \
+  --source-timestamp-mode naive-local \
+  --session-profile rth \
   --slippage-points 0.25 \
-  --round-trip-cost-points 0.10
+  --round-trip-cost-points 0.10 \
+  --walk-forward-train-months 24 \
+  --walk-forward-test-months 6
 ```
 
 Every output records the input SHA-256, schema version, source/session timezone,
@@ -54,13 +58,19 @@ as current reproducible results.
 
 `--replay-mode live` mirrors the production scanner:
 
-- evaluate at the configured 15-minute cadence outside the New York final hour;
-- evaluate every 5 minutes from 15:00 to 16:00 New York time;
+- request at the configured 15-minute cadence outside the New York final hour;
+- request every 5 minutes from 15:00 to 16:00 New York time;
+- evaluate every completed five-minute candle exposed by each catch-up request;
+- record when the signal first becomes observable;
+- expire signals that touched stop/target or left the entry zone before delivery;
 - expose no more than the configured 18-hour candle request window; and
-- group the active session in `America/New_York`.
+- use the 09:30–16:00 `America/New_York` RTH session for trade alerts.
 
-`--replay-mode every-bar` is retained only for research sensitivity. It must be
-labeled as such and cannot be compared directly with live alert counts.
+`--replay-mode every-bar` is retained only for research sensitivity. It exposes
+the full active-session history instead of the bounded live request window.
+Live signals keep both their candle timestamp and delivery timestamp. Overnight
+candles remain available to live status briefs, but do not generate trade
+alerts until an overnight rule has separate validation.
 
 Strict alerts are evaluated by default. `--signal-scope watch-and-alert` is a
 separate notification-opportunity study and must not be mixed with alert-only
@@ -97,12 +107,20 @@ node scripts/convert-ohlc-to-candles.mjs \
   --timezone America/Chicago
 ```
 
+Legacy JSON that stored Central wall-clock values directly as UTC epochs can be
+repaired at load time with `--source-timestamp-mode naive-local`. The RTH
+profile rejects broad timestamp misalignment when at least 1% of source dates
+do not begin at 09:30 New York time.
+
 ## Execution Contract
 
 Signal-distribution metrics continue to use the signal close so MFE/MAE remain
 comparable with the frozen event definition. Trade-policy metrics default to the
-next bar open and:
+first available delivery-time bar open and:
 
+- require the notification-time price and entry open to remain in the frozen
+  entry zone;
+- skip signals whose stop or target was touched before delivery;
 - skip an entry if the frozen stop or target was already passed;
 - use the worse opening price when a candle gaps through a stop;
 - apply adverse slippage to entry and exit fills;
@@ -110,10 +128,9 @@ next bar open and:
 - calculate R from the actual entry-to-stop risk for every stop or delayed-entry
   variant.
 
-Overlapping event rows remain valid signal observations. The experimental
-vectorbt adapter uses a single shared position and can ignore overlapping
-same-direction entries; its trade count must therefore never be presented as
-the canonical event count.
+Overlapping event rows remain valid signal observations. The canonical report
+also emits `reports/single_position_summary.md`, which keeps the first
+executable signal while a conservative current-stop position remains open.
 
 ## Statistical Evaluation
 
@@ -131,19 +148,20 @@ The required report contains:
 Placebo candidates match weekday, exact five-minute clock slot, trailing ATR, and observed
 session-range-in-ATR, and exclude the real event date. When fewer than 20 close
 volatility matches exist, the comparison falls back to the time-matched pool and
-should be treated as lower-confidence evidence.
+should be treated as lower-confidence evidence. Placebo executions inherit the
+matched real event's notification latency and the same entry-zone rules.
 
 ## Walk-Forward And Promotion Gate
 
-The runner now emits `reports/walk_forward_summary.md`. Its default frozen-rule
-stability view uses a rolling 12-month context window and a following 6-month
-test window, advancing by 6 months so test windows do not overlap. Train rows do
-not select parameters; they provide past-regime context only.
+The runner emits `reports/walk_forward_summary.md`. Its default frozen-rule
+stability view uses a rolling 24-month context window and a following six-month
+test window, advancing by six months so test windows do not overlap. All
+versions use the dataset calendar as a common anchor. Context rows do not
+select parameters or train the rule.
 
 Parameter selection remains future work. Any optimizer must use these same
-chronological boundaries, may use past data only, and should also be tested with
-24-month train / 6-month test folds. A final holdout must remain untouched until
-all rules, costs, and metrics have been frozen.
+chronological boundaries and past data only. A final holdout must remain
+untouched until all rules, costs, and metrics have been frozen.
 
 Promotion requires all of the following:
 
@@ -156,3 +174,14 @@ Promotion requires all of the following:
   monitoring, evaluated as different tasks.
 
 No threshold should be promoted from MFE percentile alone.
+
+## Separate Market Fragility Study
+
+The periodic fragility state is evaluated by a separate schema-v1 classifier
+event study. It freezes the live price thresholds, replays scheduled status
+briefs, labels forward price paths, uses moving-block confidence intervals, and
+emits annual and rolling chronological stability views. It does not convert a
+market state into strategy or option PnL.
+
+See [Market fragility backtest methodology](fragility-backtest-methodology.md)
+for the complete versioning, VWAP-source, outcome, and comparison contract.
