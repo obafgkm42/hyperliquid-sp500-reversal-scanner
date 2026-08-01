@@ -147,6 +147,11 @@ cross-market diagnostics. Non-brief alert scans still make only the original
 candle request. The authenticated manual `/scan` endpoint includes the same
 market-fragility snapshot without sending Discord notifications.
 
+If the primary candle request remains rate-limited after its retries, the
+Worker sends a Discord degradation notice instead of failing silently.
+Consecutive failures are deduplicated for up to six hours and the incident is
+cleared as soon as a scheduled scan succeeds.
+
 Trade-quality alerts use a 09:30–16:00 New York RTH session so opening range,
 VWAP, and historical validation have the same anchor. Hyperliquid remains
 monitored outside RTH for status briefs, but overnight trade alerts stay
@@ -175,16 +180,19 @@ For local development, copy `.env.example` to `.dev.vars`. Never commit the
 real webhook URL or token.
 
 A `SCANNER_STATE` KV binding is required for durable failed-scan recovery,
-cross-invocation signal deduplication, and exactly-once version notices:
+cross-invocation signal deduplication, rate-limit incident deduplication, and
+exactly-once version notices. The ID-free binding in `wrangler.toml` uses
+Wrangler automatic provisioning when the Worker is deployed:
 
 ```toml
 [[kv_namespaces]]
 binding = "SCANNER_STATE"
-id = "replace-with-kv-namespace-id"
 ```
 
-Without this binding the Worker still runs, but it logs a degraded-mode warning
-and falls back to the theoretical prior schedule boundary.
+Wrangler may write the provisioned namespace ID back to a local config during a
+manual deploy. Do not commit that account-specific ID to this public repository.
+Without the binding the Worker still runs, but it logs a degraded-mode warning
+and uses best-effort in-memory fallbacks.
 
 ## Development
 

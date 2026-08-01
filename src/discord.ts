@@ -294,6 +294,60 @@ export async function sendVersionNotice(
 }
 
 /**
+ * Report that a scheduled scan could not evaluate alerts or build its brief.
+ */
+export async function sendRateLimitNotice(
+  webhookUrl: string,
+  market: string,
+  timestamp: Date,
+  fetcher: typeof fetch = fetch,
+  language: Language = "zh",
+): Promise<void> {
+  const english = language === "en";
+  const scheduledTime = timestamp.toISOString();
+  await sendWebhook(
+    webhookUrl,
+    {
+      content: english
+        ? `⚠️ ${market} scan incomplete: Hyperliquid rate limited the data request. The next scheduled scan will retry automatically.`
+        : `⚠️ ${market} 掃描未完成：Hyperliquid 資料請求受到限流；下一個排程會自動重試。`,
+      embeds: [
+        {
+          title: english
+            ? "SP500 scanner degraded · data source rate limited"
+            : "SP500 掃描降級 · 資料源限流",
+          description: english
+            ? "This scheduled scan could not retrieve fresh candles, so it produced neither a market brief nor a trade-quality alert. This does not mean that no setup existed."
+            : "本次排程無法取得最新 K 線，因此沒有產生市場簡報或交易提示；這不代表當時沒有交易候選區。",
+          color: 0xe67e22,
+          fields: [
+            {
+              name: english ? "Market" : "市場",
+              value: market,
+              inline: true,
+            },
+            {
+              name: english ? "Scheduled time" : "排程時間",
+              value: scheduledTime,
+              inline: true,
+            },
+            {
+              name: english ? "Next action" : "後續處理",
+              value: english
+                ? "The Worker will retry at the next configured scan boundary. Consecutive failures notify at most once every six hours and reset immediately after recovery."
+                : "Worker 會在下一個設定的掃描邊界重試；連續失敗最多每 6 小時提醒一次，掃描恢復後會立即重置。",
+            },
+          ],
+          timestamp: scheduledTime,
+        },
+      ],
+      allowed_mentions: { parse: [] },
+    },
+    fetcher,
+  );
+}
+
+/**
  * Format a sanitized result for the Worker's manual status endpoint.
  */
 export function publicScanResult(

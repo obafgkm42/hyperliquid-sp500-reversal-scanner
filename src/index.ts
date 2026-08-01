@@ -3,6 +3,7 @@ import { loadConfig } from "./config";
 import {
   publicScanResult,
   sendMarketBrief,
+  sendRateLimitNotice,
   sendSignal,
   sendVersionNotice,
 } from "./discord";
@@ -22,7 +23,10 @@ import {
   selectAnalysisSession,
 } from "./market-hours";
 import {
+  clearRateLimitIncident,
   getLastSuccessfulCandleEnd,
+  isRateLimitIncidentActive,
+  markRateLimitIncidentActive,
   markSignalSent,
   setLastSuccessfulCandleEnd,
   wasSignalSent,
@@ -305,10 +309,12 @@ async function runScheduledScan(
   sendBrief: boolean,
   fallbackNotificationWindowStart: Date | null,
 ): Promise<void> {
+  let rateLimitIncidentActive = false;
   try {
     if (notify && config.scannerState === undefined) {
       console.warn(
         JSON.stringify({
+          message: "scanner state KV is not bound",
           status: "degraded",
           reason: "scanner_state_not_bound",
           effect:
@@ -316,6 +322,10 @@ async function runScheduledScan(
         }),
       );
     }
+    rateLimitIncidentActive = await isRateLimitIncidentActive(
+      config.scannerState,
+      config.hyperliquidCoin,
+    );
     const persistedCandleEnd = notify
       ? await getLastSuccessfulCandleEnd(
           config.scannerState,
@@ -334,14 +344,37 @@ async function runScheduledScan(
       sendBrief,
       notificationWindowStart,
     );
+    if (rateLimitIncidentActive) {
+      await clearRateLimitIncident(
+        config.scannerState,
+        config.hyperliquidCoin,
+      );
+    }
   } catch (error) {
     if (error instanceof HyperliquidRateLimitError) {
+      let discordNotice = "deduplicated";
+      if (!rateLimitIncidentActive) {
+        await sendRateLimitNotice(
+          config.discordWebhookUrl,
+          config.hyperliquidCoin,
+          now,
+          fetch,
+          config.language,
+        );
+        await markRateLimitIncidentActive(
+          config.scannerState,
+          config.hyperliquidCoin,
+        );
+        discordNotice = "sent";
+      }
       console.warn(
         JSON.stringify({
+          message: "scheduled scan skipped: Hyperliquid rate limited",
           status: "skipped",
           reason: "hyperliquid_rate_limited",
           market: config.hyperliquidCoin,
           scheduledTime: now.toISOString(),
+          discordNotice,
         }),
       );
       return;

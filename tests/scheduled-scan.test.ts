@@ -164,10 +164,67 @@ describe("scheduled catch-up scan", () => {
     const webhookRequests = calls.filter(
       (call) => call.url !== HYPERLIQUID_INFO_URL,
     );
-    expect(webhookRequests).toHaveLength(1);
+    expect(webhookRequests).toHaveLength(2);
+    const degradationPayload = JSON.parse(
+      String(webhookRequests[0]?.init?.body),
+    ) as { embeds: Array<{ title: string }> };
+    expect(degradationPayload.embeds[0]?.title).toContain("資料源限流");
     expect(
       await state.get("last-successful-candle:xyz:SP500"),
     ).toBe(String(Date.parse("2026-07-23T15:44:59.999Z")));
+    expect(
+      await state.get("rate-limit-incident:xyz:SP500"),
+    ).toBeNull();
+  });
+
+  it("sends one Discord notice for consecutive rate-limited scans", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const state = memoryKv({ "last-version-notice": "local-dev" });
+    const warning = vi.spyOn(console, "warn").mockImplementation(
+      () => undefined,
+    );
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (
+        input: string | URL | Request,
+        init?: RequestInit,
+      ): Promise<Response> => {
+        const url = String(input);
+        calls.push({ url, init });
+        return url === HYPERLIQUID_INFO_URL
+          ? new Response(null, { status: 429 })
+          : new Response(null, { status: 204 });
+      },
+    );
+
+    for (const timestamp of [
+      "2026-07-23T15:45:00.000Z",
+      "2026-07-23T16:00:00.000Z",
+    ]) {
+      const promises: Promise<unknown>[] = [];
+      await worker.scheduled(
+        scheduledController(timestamp),
+        {
+          ...baseEnv(),
+          BRIEF_INTERVAL_MINUTES: "17",
+          SCANNER_STATE: state,
+        },
+        waitUntilContext(promises),
+      );
+      await Promise.all(promises);
+    }
+
+    const webhookRequests = calls.filter(
+      (call) => call.url !== HYPERLIQUID_INFO_URL,
+    );
+    expect(webhookRequests).toHaveLength(1);
+    expect(
+      warning.mock.calls.some(([message]) =>
+        String(message).includes(
+          '"message":"scheduled scan skipped: Hyperliquid rate limited"',
+        ),
+      ),
+    ).toBe(true);
   });
 });
 
@@ -242,6 +299,9 @@ function memoryKv(initial: Record<string, string>): KVNamespace {
     get: async (key: string) => values.get(key) ?? null,
     put: async (key: string, value: string) => {
       values.set(key, value);
+    },
+    delete: async (key: string) => {
+      values.delete(key);
     },
   } as unknown as KVNamespace;
 }

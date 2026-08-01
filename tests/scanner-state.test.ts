@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  clearRateLimitIncident,
   getLastSuccessfulCandleEnd,
+  isRateLimitIncidentActive,
+  markRateLimitIncidentActive,
   markSignalSent,
   setLastSuccessfulCandleEnd,
   wasSignalSent,
@@ -34,6 +37,31 @@ describe("scanner state", () => {
     await markSignalSent(state, signal);
     expect(await wasSignalSent(state, signal)).toBe(true);
   });
+
+  it("tracks a rate-limit incident until a scan clears it", async () => {
+    const state = memoryKv();
+
+    expect(
+      await isRateLimitIncidentActive(state, "xyz:SP500"),
+    ).toBe(false);
+    await markRateLimitIncidentActive(state, "xyz:SP500");
+    expect(
+      await isRateLimitIncidentActive(state, "xyz:SP500"),
+    ).toBe(true);
+    await clearRateLimitIncident(state, "xyz:SP500");
+    expect(
+      await isRateLimitIncidentActive(state, "xyz:SP500"),
+    ).toBe(false);
+  });
+
+  it("uses an in-memory incident fallback without KV", async () => {
+    const market = "xyz:SP500-fallback";
+
+    await markRateLimitIncidentActive(undefined, market);
+    expect(await isRateLimitIncidentActive(undefined, market)).toBe(true);
+    await clearRateLimitIncident(undefined, market);
+    expect(await isRateLimitIncidentActive(undefined, market)).toBe(false);
+  });
 });
 
 function memoryKv(): KVNamespace {
@@ -42,6 +70,9 @@ function memoryKv(): KVNamespace {
     get: async (key: string) => values.get(key) ?? null,
     put: async (key: string, value: string) => {
       values.set(key, value);
+    },
+    delete: async (key: string) => {
+      values.delete(key);
     },
   } as unknown as KVNamespace;
 }

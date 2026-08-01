@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   publicScanResult,
   sendMarketBrief,
+  sendRateLimitNotice,
   sendSignal,
   sendVersionNotice,
 } from "../src/discord";
@@ -360,6 +361,54 @@ describe("sendVersionNotice", () => {
       "Worker version `2.1.0` is active.",
     );
     expect(payload.embeds[0].fields[0].name).toBe("Reminder");
+  });
+});
+
+describe("sendRateLimitNotice", () => {
+  it("makes a skipped scan visible without claiming that no setup existed", async () => {
+    const requests: RequestInit[] = [];
+    const fetcher = async (_url: string | URL | Request, init?: RequestInit) => {
+      requests.push(init ?? {});
+      return new Response(null, { status: 204 });
+    };
+
+    await sendRateLimitNotice(
+      "https://discord.com/api/webhooks/example/token",
+      "xyz:SP500",
+      new Date("2026-08-01T13:00:23Z"),
+      fetcher as typeof fetch,
+    );
+
+    const payload = JSON.parse(String(requests[0]?.body));
+    expect(payload.content).toContain("掃描未完成");
+    expect(payload.content).toContain("下一個排程會自動重試");
+    expect(payload.embeds[0].title).toContain("資料源限流");
+    expect(payload.embeds[0].description).toContain(
+      "這不代表當時沒有交易候選區",
+    );
+    expect(payload.allowed_mentions).toEqual({ parse: [] });
+  });
+
+  it("renders the degradation notice in English when configured", async () => {
+    const requests: RequestInit[] = [];
+    const fetcher = async (_url: string | URL | Request, init?: RequestInit) => {
+      requests.push(init ?? {});
+      return new Response(null, { status: 204 });
+    };
+
+    await sendRateLimitNotice(
+      "https://discord.com/api/webhooks/example/token",
+      "xyz:SP500",
+      new Date("2026-08-01T13:00:23Z"),
+      fetcher as typeof fetch,
+      "en",
+    );
+
+    const payload = JSON.parse(String(requests[0]?.body));
+    expect(payload.content).toContain("scan incomplete");
+    expect(payload.embeds[0].description).toContain(
+      "This does not mean that no setup existed",
+    );
   });
 });
 
