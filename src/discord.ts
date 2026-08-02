@@ -526,7 +526,7 @@ function buildMarketBriefNotificationSummary(
     return [
       fragility === undefined
         ? "SP500 30-minute brief"
-        : `SP500 ${formatFragilityLevel(fragility)} ${formatFragilityScore(fragility)} · ${fragility.stressedIndicatorCount}/${fragility.availableIndicatorCount} repair mechanisms stressed`,
+        : `SP500 ${formatFragilityLevel(fragility)} · ${formatFragilityStressScore(fragility, language)} · ${fragility.stressedIndicatorCount}/${fragility.availableIndicatorCount} repair mechanisms stressed`,
       `Latest ${formatNullableNumber(result.latestPrice)}`,
       `Session ${formatNullableNumber(result.sessionLow)}–${formatNullableNumber(result.sessionHigh)}`,
       signalSummary,
@@ -537,7 +537,7 @@ function buildMarketBriefNotificationSummary(
   return [
     fragility === undefined
       ? "SP500 半小時簡報"
-      : `SP500 市場狀態 ${formatFragilityLevel(fragility)} ${formatFragilityScore(fragility)} · ${fragility.stressedIndicatorCount}/${fragility.availableIndicatorCount} 修復機制受壓`,
+      : `SP500 市場狀態 ${formatFragilityLevel(fragility)} · ${formatFragilityStressScore(fragility, language)} · ${fragility.stressedIndicatorCount}/${fragility.availableIndicatorCount} 修復機制受壓`,
     `最新 ${formatNullableNumber(result.latestPrice)}`,
     `日內 ${formatNullableNumber(result.sessionLow)}–${formatNullableNumber(result.sessionHigh)}`,
     signalSummary,
@@ -588,19 +588,23 @@ function marketFragilitySummary(
   language: Language,
 ): string {
   const level = formatFragilityLevel(fragility);
-  const score = formatFragilityScore(fragility);
+  const stressScore = formatFragilityStressScore(fragility, language);
   if (language === "en") {
-    return `${level} · ${score} · ${fragility.stressedIndicatorCount}/${fragility.availableIndicatorCount} repair mechanisms stressed`;
+    return `${level} · ${stressScore} · ${fragility.stressedIndicatorCount}/${fragility.availableIndicatorCount} repair mechanisms stressed`;
   }
-  return `${level} · ${score} · ${fragility.stressedIndicatorCount}/${fragility.availableIndicatorCount} 個修復機制受壓`;
+  return `${level} · ${stressScore} · ${fragility.stressedIndicatorCount}/${fragility.availableIndicatorCount} 個修復機制受壓`;
 }
 
 function formatFragilityLevel(fragility: MarketFragilitySnapshot): string {
   return fragility.level.toUpperCase();
 }
 
-function formatFragilityScore(fragility: MarketFragilitySnapshot): string {
-  return fragility.score === null ? "n/a" : `${fragility.score}/100`;
+function formatFragilityStressScore(
+  fragility: MarketFragilitySnapshot,
+  language: Language,
+): string {
+  const score = fragility.score === null ? "n/a" : `${fragility.score}/100`;
+  return language === "en" ? `stress ${score}` : `壓力 ${score}`;
 }
 
 function fragilityDataQualityLabel(

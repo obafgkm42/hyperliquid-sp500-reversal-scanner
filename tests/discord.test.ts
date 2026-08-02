@@ -165,10 +165,20 @@ describe("sendMarketBrief", () => {
       "zh",
       fragilitySnapshot(),
     );
+    await sendMarketBrief(
+      "https://discord.com/api/webhooks/example/token",
+      result,
+      new Date("2026-06-24T00:30:00Z"),
+      fetcher as typeof fetch,
+      undefined,
+      "en",
+      fragilitySnapshot(),
+    );
 
     const payload = JSON.parse(String(requests[0]?.body));
+    const englishPayload = JSON.parse(String(requests[1]?.body));
     expect(payload.content).toMatch(/^@everyone /);
-    expect(payload.content).toContain("市場狀態 BREAKING 60/100");
+    expect(payload.content).toContain("市場狀態 BREAKING · 壓力 60/100");
     expect(payload.content).toContain("3/6 修復機制受壓");
     expect(payload.allowed_mentions).toEqual({ parse: ["everyone"] });
     expect(payload.embeds[0].title).toBe("SP500 市場狀態 · BREAKING");
@@ -181,6 +191,59 @@ describe("sendMarketBrief", () => {
         expect.objectContaining({
           name: "資料覆蓋",
           value: "6/6 · 完整",
+        }),
+      ]),
+    );
+    expect(englishPayload.content).toContain(
+      "BREAKING · stress 60/100 · 3/6 repair mechanisms stressed",
+    );
+  });
+
+  it("labels a resilient zero score as zero stress", async () => {
+    const requests: RequestInit[] = [];
+    const fetcher = async (_url: string | URL | Request, init?: RequestInit) => {
+      requests.push(init ?? {});
+      return new Response(null, { status: 204 });
+    };
+    const result: ScanResult = {
+      market: "xyz:SP500",
+      candleCount: 12,
+      sessionHigh: 6100,
+      sessionLow: 6000,
+      latestPrice: 6090,
+      status: "no fresh lookback extreme rejection passed watch or alert thresholds",
+      watch: null,
+      signal: null,
+    };
+    const resilientSnapshot = {
+      ...fragilitySnapshot(),
+      level: "resilient" as const,
+      score: 0,
+      stressedIndicatorCount: 0,
+    };
+
+    await sendMarketBrief(
+      "https://discord.com/api/webhooks/example/token",
+      result,
+      new Date("2026-06-24T00:30:00Z"),
+      fetcher as typeof fetch,
+      undefined,
+      "zh",
+      resilientSnapshot,
+    );
+
+    const payload = JSON.parse(String(requests[0]?.body));
+    expect(payload.content).toContain(
+      "市場狀態 RESILIENT · 壓力 0/100 · 0/6 修復機制受壓",
+    );
+    expect(payload.embeds[0].description).toContain(
+      "RESILIENT · 壓力 0/100 · 0/6 個修復機制受壓",
+    );
+    expect(payload.embeds[0].fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "市場韌性",
+          value: "RESILIENT · 壓力 0/100 · 0/6 個修復機制受壓",
         }),
       ]),
     );

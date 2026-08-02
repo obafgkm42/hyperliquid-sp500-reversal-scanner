@@ -58,12 +58,13 @@ cross-market diagnostics:
 - breadth across AAPL, MSFT, NVDA, AMZN, GOOGL, META, and TSLA; and
 - simultaneous weakness in Hyperliquid `xyz:SP500` and `xyz:XYZ100`.
 
-The ordinal `0–100` score is a readable failure-count scale, not a probability
-of a crash or a short recommendation. The feature does not change the frozen
-reversal alert thresholds. If the cross-market metadata request fails, the
-brief remains available with four price-only indicators and explicitly labels
-the data coverage as partial. Scheduled `BREAKING` and `PANIC` briefs mention
-`@everyone`; lower-severity briefs do not.
+The ordinal `0–100` stress score is a readable failure-count scale, where zero
+means no repair mechanism is under stress. It is not a probability of a crash
+or a short recommendation. The feature does not change the frozen reversal
+alert thresholds. If the cross-market metadata request fails, the brief remains
+available with four price-only indicators and explicitly labels the data
+coverage as partial. Scheduled `BREAKING` and `PANIC` briefs mention `@everyone`;
+lower-severity briefs do not.
 
 ## Why bullish and bearish signals are asymmetric
 
