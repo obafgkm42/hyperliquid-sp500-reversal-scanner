@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { updateResilienceDecayState } from "../src/resilience-decay";
+import {
+  calculateResilienceEventScore,
+  calculateResilienceMetrics,
+  updateResilienceDecayState,
+} from "../src/resilience-decay";
 import type {
   ResilienceDecayState,
   ResiliencePriceSnapshot,
+  ResilienceShockEvent,
 } from "../src/types";
 
 describe("resilience decay state", () => {
@@ -77,6 +82,66 @@ describe("resilience decay state", () => {
     expect(state.putCount).toBe(1);
     expect(repeated.approximateCpuMs).toBeGreaterThanOrEqual(0);
   });
+
+  it("applies the weighted event score to the three recovery ratios", () => {
+    const score = calculateResilienceEventScore(
+      completedEvent("weighted", 100, 90, 100, 90, 95),
+    );
+
+    expect(score).toMatchObject({
+      oneHourRecoveryRatio: 1,
+      twoHourRecoveryRatio: 0,
+      closeRecoveryRatio: 0.5,
+      eventScore: 45,
+    });
+  });
+
+  it("calculates recent, baseline, slope, and bounded decay metrics", () => {
+    const eventScores = [80, 78, 75, 72, 70, 60, 55, 50];
+    const metrics = calculateResilienceMetrics({
+      version: 1,
+      market: "xyz:SP500",
+      sessionKey: "2026-08-04",
+      snapshots: [],
+      activeShock: null,
+      completedShocks: eventScores.map((score, index) =>
+        completedEvent(
+          `event-${index}`,
+          100,
+          90,
+          90 + score / 10,
+          90 + score / 10,
+          90 + score / 10,
+        ),
+      ),
+    });
+
+    expect(metrics.status).toBe("FADING");
+    expect(metrics.recentResilience).toBe(55);
+    expect(metrics.baselineResilience).toBe(75);
+    expect(metrics.decayDelta).toBe(-20);
+    expect(metrics.recentEventScoreSlope).toBe(-5);
+    expect(metrics.decayScore).toBe(50);
+  });
+
+  it("does not classify until three recent and five baseline shocks are scored", () => {
+    const metrics = calculateResilienceMetrics({
+      version: 1,
+      market: "xyz:SP500",
+      sessionKey: "2026-08-04",
+      snapshots: [],
+      activeShock: null,
+      completedShocks: [
+        completedEvent("event-1", 100, 90, 100, null, 100),
+        completedEvent("event-2", 100, 90, 100, 100, null),
+      ],
+    });
+
+    expect(metrics.status).toBe("INSUFFICIENT_DATA");
+    expect(metrics.recentResilience).toBeNull();
+    expect(metrics.baselineResilience).toBeNull();
+    expect(metrics.decayDelta).toBeNull();
+  });
 });
 
 async function record(
@@ -101,6 +166,31 @@ function snapshot(
     sessionHigh,
     sessionLow: price,
     isSessionClose,
+  };
+}
+
+function completedEvent(
+  id: string,
+  sessionHighAtTrigger: number,
+  troughPrice: number,
+  oneHourPrice: number | null,
+  twoHourPrice: number | null,
+  closePrice: number | null,
+): ResilienceShockEvent {
+  return {
+    id,
+    sessionKey: "2026-08-04",
+    startedAt: Date.parse("2026-08-04T14:00:00.000Z"),
+    triggerPrice: 99.4,
+    sessionHighAtTrigger,
+    troughPrice,
+    troughAt: Date.parse("2026-08-04T14:30:00.000Z"),
+    oneHourPrice,
+    twoHourPrice,
+    closePrice,
+    recoveredAt: Date.parse("2026-08-04T15:00:00.000Z"),
+    completedAt: Date.parse("2026-08-04T16:00:00.000Z"),
+    completionReason: "recovered",
   };
 }
 

@@ -202,3 +202,28 @@ export interface ResilienceDecayState {
   activeShock: ResilienceShockEvent | null;
   completedShocks: ResilienceShockEvent[];
 }
+
+export type ResilienceDecayStatus =
+  | "INSUFFICIENT_DATA"
+  | "RESILIENT"
+  | "FADING"
+  | "FRAGILE";
+
+export interface ResilienceEventScore {
+  eventId: string;
+  oneHourRecoveryRatio: number;
+  twoHourRecoveryRatio: number;
+  closeRecoveryRatio: number;
+  eventScore: number;
+}
+
+export interface ResilienceDecayMetrics {
+  status: ResilienceDecayStatus;
+  recentResilience: number | null;
+  baselineResilience: number | null;
+  decayDelta: number | null;
+  recentEventScoreSlope: number | null;
+  decayScore: number | null;
+  scoredShockCount: number;
+  eventScores: ResilienceEventScore[];
+}

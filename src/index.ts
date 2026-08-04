@@ -24,7 +24,11 @@ import {
   isRthClose,
   selectAnalysisSession,
 } from "./market-hours";
-import { updateResilienceDecayState } from "./resilience-decay";
+import {
+  calculateResilienceMetrics,
+  updateResilienceDecayState,
+} from "./resilience-decay";
+import type { ResilienceDecayUpdate } from "./resilience-decay";
 import {
   clearRateLimitIncident,
   getLastSuccessfulCandleEnd,
@@ -175,13 +179,32 @@ async function runScan(
     sessionCandles,
     thresholds,
   );
-  await maybeRecordResilienceSnapshot(
+  const resilienceUpdate = await maybeRecordResilienceSnapshot(
     config,
     now,
     sendBrief,
     analysisSession.kind,
     sessionCandles,
   );
+  if (
+    resilienceUpdate?.state !== null &&
+    resilienceUpdate?.state !== undefined
+  ) {
+    const metrics = calculateResilienceMetrics(resilienceUpdate.state);
+    console.log(
+      JSON.stringify({
+        status: "resilience_decay_metrics",
+        market: config.hyperliquidCoin,
+        resilienceStatus: metrics.status,
+        recentResilience: metrics.recentResilience,
+        baselineResilience: metrics.baselineResilience,
+        decayDelta: metrics.decayDelta,
+        recentEventScoreSlope: metrics.recentEventScoreSlope,
+        decayScore: metrics.decayScore,
+        scoredShockCount: metrics.scoredShockCount,
+      }),
+    );
+  }
   const notificationOpportunities =
     notify &&
     analysisSession.notificationsEnabled &&
@@ -319,18 +342,18 @@ async function maybeRecordResilienceSnapshot(
   briefDue: boolean,
   sessionKind: ReturnType<typeof selectAnalysisSession>["kind"],
   sessionCandles: readonly Candle[],
-): Promise<void> {
+): Promise<ResilienceDecayUpdate | null> {
   if (
     !briefDue ||
     config.hyperliquidCoin !== "xyz:SP500" ||
     sessionKind !== "rth"
   ) {
-    return;
+    return null;
   }
   const firstCandle = sessionCandles[0];
   const latestCandle = sessionCandles.at(-1);
   if (firstCandle === undefined || latestCandle === undefined) {
-    return;
+    return null;
   }
   const snapshot: ResiliencePriceSnapshot = {
     sessionKey: new Date(firstCandle.startTime)
@@ -365,6 +388,7 @@ async function maybeRecordResilienceSnapshot(
       approximateCpuMs: update.approximateCpuMs,
     }),
   );
+  return update;
 }
 
 async function calculateMarketFragility(

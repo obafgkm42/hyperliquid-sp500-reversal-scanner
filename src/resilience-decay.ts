@@ -1,5 +1,7 @@
 import type {
+  ResilienceDecayMetrics,
   ResilienceDecayState,
+  ResilienceEventScore,
   ResiliencePriceSnapshot,
   ResilienceShockEvent,
 } from "./types";
@@ -10,6 +12,11 @@ const SHOCK_DROP_THRESHOLD = 0.006;
 const CHECKPOINT_ONE_HOUR_MS = 60 * 60 * 1_000;
 const CHECKPOINT_TWO_HOURS_MS = 2 * 60 * 60 * 1_000;
 const MAX_COMPLETED_SHOCKS = 12;
+const FADING_RECENT_RESILIENCE_MINIMUM = 55;
+const FADING_DECAY_DELTA_THRESHOLD = -15;
+const ONE_HOUR_SCORE_WEIGHT = 0.35;
+const TWO_HOUR_SCORE_WEIGHT = 0.45;
+const CLOSE_SCORE_WEIGHT = 0.2;
 
 export interface ResilienceDecayUpdate {
   state: ResilienceDecayState | null;
@@ -22,8 +29,8 @@ export interface ResilienceDecayUpdate {
 /**
  * Record one 30-minute SPX snapshot in the bounded resilience event log.
  *
- * This first-stage module stores raw observations only. Recovery ratios and
- * resilience classifications are intentionally left for later increments.
+ * The state writer stores raw observations; metric calculation remains a
+ * separate pure step so it does not add another KV operation.
  */
 export async function updateResilienceDecayState(
   state: KVNamespace | undefined,
@@ -69,6 +76,90 @@ export async function updateResilienceDecayState(
     approximateCpuMs: elapsedMilliseconds(processingStartedAt),
     shockStarted: update.shockStarted,
     shockCompleted: update.shockCompleted,
+  };
+}
+
+/**
+ * Calculate resilience metrics from the raw event log without writing state.
+ *
+ * A recovery ratio is the fraction of the distance from an event trough back
+ * to its pre-shock session high. The decay score is pressure-oriented: zero
+ * means no measured decay, while higher values mean stronger deterioration.
+ */
+export function calculateResilienceMetrics(
+  state: ResilienceDecayState,
+): ResilienceDecayMetrics {
+  const eventScores = state.completedShocks.flatMap((event) => {
+    const score = calculateResilienceEventScore(event);
+    return score === null ? [] : [score];
+  });
+  const recentScores = eventScores.slice(-3);
+  const baselineScores =
+    eventScores.length >= 8 ? eventScores.slice(-8, -3) : [];
+  const recentResilience = meanEventScores(recentScores);
+  const baselineResilience = meanEventScores(baselineScores);
+  const decayDelta =
+    recentResilience === null || baselineResilience === null
+      ? null
+      : recentResilience - baselineResilience;
+  const recentEventScoreSlope = calculateEventScoreSlope(recentScores);
+  const decayScore = calculateDecayScore(
+    decayDelta,
+    recentEventScoreSlope,
+  );
+
+  return {
+    status: classifyResilience(
+      recentResilience,
+      baselineResilience,
+      decayDelta,
+      recentEventScoreSlope,
+    ),
+    recentResilience,
+    baselineResilience,
+    decayDelta,
+    recentEventScoreSlope,
+    decayScore,
+    scoredShockCount: eventScores.length,
+    eventScores,
+  };
+}
+
+/**
+ * Calculate the weighted score for one shock when all three observations exist.
+ */
+export function calculateResilienceEventScore(
+  event: ResilienceShockEvent,
+): ResilienceEventScore | null {
+  const oneHourRecoveryRatio = calculateRecoveryRatio(
+    event,
+    event.oneHourPrice,
+  );
+  const twoHourRecoveryRatio = calculateRecoveryRatio(
+    event,
+    event.twoHourPrice,
+  );
+  const closeRecoveryRatio = calculateRecoveryRatio(
+    event,
+    event.closePrice,
+  );
+  if (
+    oneHourRecoveryRatio === null ||
+    twoHourRecoveryRatio === null ||
+    closeRecoveryRatio === null
+  ) {
+    return null;
+  }
+
+  return {
+    eventId: event.id,
+    oneHourRecoveryRatio,
+    twoHourRecoveryRatio,
+    closeRecoveryRatio,
+    eventScore:
+      oneHourRecoveryRatio * ONE_HOUR_SCORE_WEIGHT * 100 +
+      twoHourRecoveryRatio * TWO_HOUR_SCORE_WEIGHT * 100 +
+      closeRecoveryRatio * CLOSE_SCORE_WEIGHT * 100,
   };
 }
 
@@ -284,6 +375,94 @@ function isShockTrigger(snapshot: ResiliencePriceSnapshot): boolean {
   return (
     snapshot.price <= snapshot.sessionHigh * (1 - SHOCK_DROP_THRESHOLD)
   );
+}
+
+function calculateRecoveryRatio(
+  event: ResilienceShockEvent,
+  recoveryPrice: number | null,
+): number | null {
+  if (recoveryPrice === null) {
+    return null;
+  }
+  const recoveryRange = event.sessionHighAtTrigger - event.troughPrice;
+  if (recoveryRange <= 0) {
+    return null;
+  }
+  return clamp((recoveryPrice - event.troughPrice) / recoveryRange, 0, 1);
+}
+
+function meanEventScores(
+  scores: readonly ResilienceEventScore[],
+): number | null {
+  if (scores.length === 0) {
+    return null;
+  }
+  return (
+    scores.reduce((total, score) => total + score.eventScore, 0) /
+    scores.length
+  );
+}
+
+function calculateEventScoreSlope(
+  scores: readonly ResilienceEventScore[],
+): number | null {
+  if (scores.length < 2) {
+    return null;
+  }
+  const xMean = (scores.length - 1) / 2;
+  const yMean =
+    scores.reduce((total, score) => total + score.eventScore, 0) /
+    scores.length;
+  let numerator = 0;
+  let denominator = 0;
+  scores.forEach((score, index) => {
+    const xOffset = index - xMean;
+    numerator += xOffset * (score.eventScore - yMean);
+    denominator += xOffset * xOffset;
+  });
+  return denominator === 0 ? null : numerator / denominator;
+}
+
+function calculateDecayScore(
+  decayDelta: number | null,
+  recentEventScoreSlope: number | null,
+): number | null {
+  if (decayDelta === null || recentEventScoreSlope === null) {
+    return null;
+  }
+  return clamp(
+    2 * Math.max(0, -decayDelta) +
+      2 * Math.max(0, -recentEventScoreSlope),
+    0,
+    100,
+  );
+}
+
+function classifyResilience(
+  recentResilience: number | null,
+  baselineResilience: number | null,
+  decayDelta: number | null,
+  recentEventScoreSlope: number | null,
+): ResilienceDecayMetrics["status"] {
+  if (
+    recentResilience === null ||
+    baselineResilience === null ||
+    decayDelta === null ||
+    recentEventScoreSlope === null
+  ) {
+    return "INSUFFICIENT_DATA";
+  }
+  if (recentResilience < FADING_RECENT_RESILIENCE_MINIMUM) {
+    return "FRAGILE";
+  }
+  if (decayDelta <= FADING_DECAY_DELTA_THRESHOLD) {
+    return "FADING";
+  }
+  return "RESILIENT";
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
 }
 
 function emptyState(
