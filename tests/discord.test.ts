@@ -10,6 +10,7 @@ import {
 import type {
   MarketFragilitySnapshot,
   ReversalLocation,
+  ResilienceDecayMetrics,
   ScanResult,
 } from "../src/types";
 
@@ -296,6 +297,83 @@ describe("sendMarketBrief", () => {
     expect(panic.allowed_mentions).toEqual({ parse: ["everyone"] });
     expect(fragile.content).not.toContain("@everyone");
     expect(fragile.allowed_mentions).toEqual({ parse: [] });
+  });
+
+  it("shows FADING resilience on the detailed card without changing mentions", async () => {
+    const requests: RequestInit[] = [];
+    const fetcher = async (_url: string | URL | Request, init?: RequestInit) => {
+      requests.push(init ?? {});
+      return new Response(null, { status: 204 });
+    };
+    const result: ScanResult = {
+      market: "xyz:SP500",
+      candleCount: 12,
+      sessionHigh: 6100,
+      sessionLow: 6000,
+      latestPrice: 6010,
+      status: "no fresh lookback extreme rejection passed watch or alert thresholds",
+      watch: null,
+      signal: null,
+    };
+
+    await sendMarketBrief(
+      "https://discord.com/api/webhooks/example/token",
+      result,
+      new Date("2026-06-24T00:30:00Z"),
+      fetcher as typeof fetch,
+      undefined,
+      "zh",
+      undefined,
+      fadingResilienceMetrics(),
+    );
+
+    const payload = JSON.parse(String(requests[0]?.body));
+    expect(payload.content).not.toContain("FADING");
+    expect(payload.allowed_mentions).toEqual({ parse: [] });
+    expect(payload.embeds[0].fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "韌性衰退",
+          value: "FADING · 復原 55.0/100 · 基準 75.0/100 · 衰退 Δ -20.0 · 衰退壓力 50.0/100",
+        }),
+      ]),
+    );
+  });
+
+  it("does not add the FADING card field for a non-fading state", async () => {
+    const requests: RequestInit[] = [];
+    const fetcher = async (_url: string | URL | Request, init?: RequestInit) => {
+      requests.push(init ?? {});
+      return new Response(null, { status: 204 });
+    };
+    const result: ScanResult = {
+      market: "xyz:SP500",
+      candleCount: 12,
+      sessionHigh: 6100,
+      sessionLow: 6075,
+      latestPrice: 6090,
+      status: "no fresh lookback extreme rejection passed watch or alert thresholds",
+      watch: null,
+      signal: null,
+    };
+
+    await sendMarketBrief(
+      "https://discord.com/api/webhooks/example/token",
+      result,
+      new Date("2026-06-24T00:30:00Z"),
+      fetcher as typeof fetch,
+      undefined,
+      "en",
+      undefined,
+      { ...fadingResilienceMetrics(), status: "RESILIENT" },
+    );
+
+    const payload = JSON.parse(String(requests[0]?.body));
+    expect(payload.embeds[0].fields).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "Resilience decay" }),
+      ]),
+    );
   });
 });
 
@@ -586,5 +664,18 @@ function fragilitySnapshot(): MarketFragilitySnapshot {
         threshold: "SP500 and XYZ100 both <= -0.75%",
       },
     ],
+  };
+}
+
+function fadingResilienceMetrics(): ResilienceDecayMetrics {
+  return {
+    status: "FADING",
+    recentResilience: 55,
+    baselineResilience: 75,
+    decayDelta: -20,
+    recentEventScoreSlope: -5,
+    decayScore: 50,
+    scoredShockCount: 8,
+    eventScores: [],
   };
 }

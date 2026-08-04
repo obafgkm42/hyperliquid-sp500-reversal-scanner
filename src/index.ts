@@ -186,22 +186,25 @@ async function runScan(
     analysisSession.kind,
     sessionCandles,
   );
-  if (
+  const resilienceMetrics =
     resilienceUpdate?.state !== null &&
     resilienceUpdate?.state !== undefined
+      ? calculateResilienceMetrics(resilienceUpdate.state)
+      : undefined;
+  if (
+    resilienceMetrics !== undefined
   ) {
-    const metrics = calculateResilienceMetrics(resilienceUpdate.state);
     console.log(
       JSON.stringify({
         status: "resilience_decay_metrics",
         market: config.hyperliquidCoin,
-        resilienceStatus: metrics.status,
-        recentResilience: metrics.recentResilience,
-        baselineResilience: metrics.baselineResilience,
-        decayDelta: metrics.decayDelta,
-        recentEventScoreSlope: metrics.recentEventScoreSlope,
-        decayScore: metrics.decayScore,
-        scoredShockCount: metrics.scoredShockCount,
+        resilienceStatus: resilienceMetrics.status,
+        recentResilience: resilienceMetrics.recentResilience,
+        baselineResilience: resilienceMetrics.baselineResilience,
+        decayDelta: resilienceMetrics.decayDelta,
+        recentEventScoreSlope: resilienceMetrics.recentEventScoreSlope,
+        decayScore: resilienceMetrics.decayScore,
+        scoredShockCount: resilienceMetrics.scoredShockCount,
       }),
     );
   }
@@ -321,6 +324,7 @@ async function runScan(
       chart,
       config.language,
       fragility ?? undefined,
+      resilienceMetrics,
     );
   }
   if (notify) {

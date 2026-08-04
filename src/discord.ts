@@ -8,11 +8,13 @@ import {
   formatMarketFragilitySummary,
   marketFragilityColor,
 } from "./market-fragility-format";
+import { formatResilienceDecayCardSummary } from "./resilience-decay-format";
 import type {
   Language,
   MarketFragilitySnapshot,
   NotificationOpportunity,
   ReversalLocation,
+  ResilienceDecayMetrics,
   ScanResult,
 } from "./types";
 
@@ -151,6 +153,7 @@ export async function sendMarketBrief(
   chart?: ChartAttachment,
   language: Language = "zh",
   fragility?: MarketFragilitySnapshot,
+  resilience?: ResilienceDecayMetrics,
 ): Promise<void> {
   const english = language === "en";
   const chartMetadata =
@@ -172,6 +175,9 @@ export async function sendMarketBrief(
     ...(fragility === undefined
       ? []
       : marketFragilityFields(fragility, language)),
+    ...(resilience?.status === "FADING"
+      ? resilienceDecayFields(resilience, language)
+      : []),
     {
       name: english ? "Status" : "狀態",
       value: localizeDiagnostic(result.status, language),
@@ -586,6 +592,19 @@ function marketFragilityFields(
       name: english ? "Data coverage" : "資料覆蓋",
       value: `${fragility.availableIndicatorCount}/${fragility.totalIndicatorCount} · ${formatMarketFragilityDataQuality(fragility, language)}`,
       inline: true,
+    },
+  ];
+}
+
+function resilienceDecayFields(
+  resilience: ResilienceDecayMetrics,
+  language: Language,
+): Array<{ name: string; value: string; inline: boolean }> {
+  return [
+    {
+      name: language === "en" ? "Resilience decay" : "韌性衰退",
+      value: formatResilienceDecayCardSummary(resilience, language),
+      inline: false,
     },
   ];
 }
