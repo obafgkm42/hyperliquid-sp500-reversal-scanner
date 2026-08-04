@@ -110,7 +110,15 @@ asymmetric regime policy
       v
 Discord webhook watch / alert / brief
 
-Due brief or authenticated manual scan
+On-demand query: Discord `/scanner status`
+      |
+      v
+signature + allowed-guild verification
+      |
+      v
+private read-only status response
+
+Due brief, slash status, or authenticated manual scan
       |
       v
 one Hyperliquid metaAndAssetCtxs request
@@ -145,8 +153,9 @@ Expired opportunities are logged but not sent.
 
 A due 30-minute brief makes one additional `metaAndAssetCtxs` request for the
 cross-market diagnostics. Non-brief alert scans still make only the original
-candle request. The authenticated manual `/scan` endpoint includes the same
-market-fragility snapshot without sending Discord notifications.
+candle request. The authenticated manual `/scan` endpoint and private
+`/scanner status` command include the same market-fragility snapshot without
+sending alert notifications.
 
 If the primary candle request remains rate-limited after its retries, the
 Worker sends a Discord degradation notice instead of failing silently.
@@ -160,25 +169,27 @@ disabled until a separate overnight policy has been validated.
 
 ## Configuration
 
-Public defaults live in `wrangler.toml`. Store credentials only as Cloudflare
-secrets:
+Public defaults live in `wrangler.toml`. Store credentials and account-specific
+Discord settings only as Cloudflare secrets:
 
 ```bash
 npx wrangler secret put DISCORD_WEBHOOK_URL
+npx wrangler secret put DISCORD_APPLICATION_PUBLIC_KEY
+npx wrangler secret put DISCORD_GUILD_ID
 npx wrangler secret put MANUAL_SCAN_TOKEN
 ```
 
-Set `LANGUAGE` in `wrangler.toml` to control Discord notifications and the
-localized status text returned by the authenticated `/scan` endpoint. Supported
-values are `zh` and `en`; the default is `zh`:
+Set `LANGUAGE` in `wrangler.toml` to control Discord notifications, slash-command
+responses, and the localized status text returned by the authenticated `/scan`
+endpoint. Supported values are `zh` and `en`; the default is `zh`:
 
 ```toml
 [vars]
 LANGUAGE = "zh"
 ```
 
-For local development, copy `.env.example` to `.dev.vars`. Never commit the
-real webhook URL or token.
+For local development, copy `.env.example` to `.dev.vars`. Never commit real
+Discord account settings, webhook URLs, or tokens.
 
 A `SCANNER_STATE` KV binding is required for durable failed-scan recovery,
 cross-invocation signal deduplication, rate-limit incident deduplication, and
@@ -194,6 +205,58 @@ Wrangler may write the provisioned namespace ID back to a local config during a
 manual deploy. Do not commit that account-specific ID to this public repository.
 Without the binding the Worker still runs, but it logs a degraded-mode warning
 and uses best-effort in-memory fallbacks.
+
+## Discord slash commands
+
+The Worker supports one conventional guild-scoped command with three
+subcommands:
+
+- `/scanner status`: performs one live read-only query and privately returns
+  price, signal, repair mechanisms, data coverage, and scanner diagnostics;
+- `/scanner repair`: privately displays the six repair mechanisms, their live
+  thresholds, and the RESILIENT / FRAGILE / BREAKING / PANIC levels without
+  requesting market data; and
+- `/scanner help`: privately displays the command guide.
+
+The command uses HTTP Interactions rather than a Discord Gateway connection.
+It does not read ordinary messages, requires no privileged intents, and never
+places an order. Every interaction must have a valid Discord Ed25519 signature
+and match the configured `DISCORD_GUILD_ID`. Command responses are ephemeral
+and do not allow mentions.
+
+Set it up for one server:
+
+1. Create a Discord application in the Developer Portal. Copy its Application
+   ID and Public Key from **General Information**. Create or reset its Bot Token
+   on the **Bot** page; the token is needed only for one-time command
+   registration.
+2. Store the Public Key and target server ID as the Cloudflare secrets shown in
+   the Configuration section, then deploy the Worker.
+3. In **General Information**, set **Interactions Endpoint URL** to
+   `https://<worker-host>/discord/interactions`. Discord will validate the
+   signed PING automatically.
+4. Install the application into the target server with only the
+   `applications.commands` scope. A bot permission bitfield and privileged
+   intents are not required.
+5. Provide `DISCORD_APPLICATION_ID`, `DISCORD_GUILD_ID`, and
+   `DISCORD_BOT_TOKEN` as temporary local environment variables, then run:
+
+   ```bash
+   npm run discord:register
+   ```
+
+   The script creates or updates the guild command named `scanner`. Do not put
+   these account-specific values in repository files, screenshots, or shell
+   history; unset the bot token after registration.
+6. The command defaults to administrators only. To allow a specific role or
+   channel, open **Server Settings → Integrations**, select the application,
+   and edit its command permissions. This is a Discord configuration change,
+   not an application review.
+
+Guild commands update immediately, which keeps private deployment and testing
+simple. If the scanner is ever intended for broad multi-server distribution,
+review the installation, permissions, abuse controls, and Discord verification
+requirements before switching to a global command.
 
 ## Development
 

@@ -52,6 +52,20 @@ export const FRAGILITY_CONTEXT_COINS = [
 ] as const;
 
 /**
+ * Canonical live thresholds shared by the classifier and user-facing guides.
+ */
+export const marketFragilityThresholds: Readonly<
+  Record<MarketFragilityIndicatorId, string>
+> = {
+  session_loss: "<= -1.0%",
+  vwap_repair_failure: "<= -0.35 ATR and 3 closes below VWAP",
+  poor_close_location: "<= 25% of range",
+  downside_tail_cluster: ">= 2 volatility-adjusted large down returns",
+  mega_cap_breadth: ">= 70% down at least 0.5%",
+  equity_cross_confirmation: "SP500 and XYZ100 both <= -0.75%",
+};
+
+/**
  * Count independently observable repair failures without changing the frozen
  * reversal alert policy. The score is ordinal, not a calibrated probability.
  */
@@ -102,7 +116,10 @@ function sessionLossIndicator(
     latest === undefined ||
     first.open <= 0
   ) {
-    return unavailableIndicator("session_loss", "<= -1.0%");
+    return unavailableIndicator(
+      "session_loss",
+      marketFragilityThresholds.session_loss,
+    );
   }
   const sessionReturn = latest.close / first.open - 1;
   return indicator(
@@ -110,7 +127,7 @@ function sessionLossIndicator(
     sessionReturn <= SESSION_LOSS_THRESHOLD,
     sessionReturn,
     formatPercent(sessionReturn),
-    "<= -1.0%",
+    marketFragilityThresholds.session_loss,
   );
 }
 
@@ -126,7 +143,7 @@ function vwapRepairIndicator(
   ) {
     return unavailableIndicator(
       "vwap_repair_failure",
-      "<= -0.35 ATR and 3 closes below VWAP",
+      marketFragilityThresholds.vwap_repair_failure,
     );
   }
   const vwap = calculateVwap(candles);
@@ -140,7 +157,7 @@ function vwapRepairIndicator(
       recentClosesRemainBelowVwap,
     vwapGapAtr,
     `${vwapGapAtr.toFixed(2)} ATR`,
-    "<= -0.35 ATR and 3 closes below VWAP",
+    marketFragilityThresholds.vwap_repair_failure,
   );
 }
 
@@ -149,13 +166,19 @@ function closeLocationIndicator(
 ): MarketFragilityIndicator {
   const latest = candles.at(-1);
   if (candles.length < MINIMUM_PRICE_CANDLES || latest === undefined) {
-    return unavailableIndicator("poor_close_location", "<= 25% of range");
+    return unavailableIndicator(
+      "poor_close_location",
+      marketFragilityThresholds.poor_close_location,
+    );
   }
   const sessionHigh = Math.max(...candles.map((candle) => candle.high));
   const sessionLow = Math.min(...candles.map((candle) => candle.low));
   const sessionRange = sessionHigh - sessionLow;
   if (sessionRange <= 0) {
-    return unavailableIndicator("poor_close_location", "<= 25% of range");
+    return unavailableIndicator(
+      "poor_close_location",
+      marketFragilityThresholds.poor_close_location,
+    );
   }
   const closeLocation = (latest.close - sessionLow) / sessionRange;
   return indicator(
@@ -163,7 +186,7 @@ function closeLocationIndicator(
     closeLocation <= POOR_CLOSE_LOCATION_THRESHOLD,
     closeLocation,
     formatPercent(closeLocation, 0),
-    "<= 25% of range",
+    marketFragilityThresholds.poor_close_location,
   );
 }
 
@@ -173,7 +196,7 @@ function downsideTailIndicator(
   if (candles.length < MINIMUM_PRICE_CANDLES) {
     return unavailableIndicator(
       "downside_tail_cluster",
-      ">= 2 volatility-adjusted large down returns",
+      marketFragilityThresholds.downside_tail_cluster,
     );
   }
   const sample = candles.slice(-(TAIL_LOOKBACK_RETURNS + 1));
@@ -186,7 +209,7 @@ function downsideTailIndicator(
   if (returns.length < MINIMUM_PRICE_CANDLES - 1) {
     return unavailableIndicator(
       "downside_tail_cluster",
-      ">= 2 volatility-adjusted large down returns",
+      marketFragilityThresholds.downside_tail_cluster,
     );
   }
   const medianAbsoluteReturn = median(
@@ -204,7 +227,7 @@ function downsideTailIndicator(
     largeDownCount >= LARGE_DOWN_RETURN_COUNT,
     largeDownCount,
     `${largeDownCount}/${returns.length} <= -${formatPercent(largeDownThreshold)}`,
-    ">= 2 volatility-adjusted large down returns",
+    marketFragilityThresholds.downside_tail_cluster,
   );
 }
 
@@ -219,7 +242,7 @@ function breadthIndicator(
   if (returns.length < BREADTH_MINIMUM_ASSETS) {
     return unavailableIndicator(
       "mega_cap_breadth",
-      ">= 70% down at least 0.5%",
+      marketFragilityThresholds.mega_cap_breadth,
     );
   }
   const declinerRatio =
@@ -230,7 +253,7 @@ function breadthIndicator(
     declinerRatio >= BREADTH_STRESS_RATIO,
     declinerRatio,
     `${formatPercent(declinerRatio, 0)} (${returns.length} assets)`,
-    ">= 70% down at least 0.5%",
+    marketFragilityThresholds.mega_cap_breadth,
   );
 }
 
@@ -246,7 +269,7 @@ function crossAssetIndicator(
   if (sp500Return === null || xyz100Return === null) {
     return unavailableIndicator(
       "equity_cross_confirmation",
-      "SP500 and XYZ100 both <= -0.75%",
+      marketFragilityThresholds.equity_cross_confirmation,
     );
   }
   return indicator(
@@ -255,7 +278,7 @@ function crossAssetIndicator(
       xyz100Return <= CROSS_ASSET_LOSS_THRESHOLD,
     average([sp500Return, xyz100Return]),
     `SP500 ${formatPercent(sp500Return)} / XYZ100 ${formatPercent(xyz100Return)}`,
-    "SP500 and XYZ100 both <= -0.75%",
+    marketFragilityThresholds.equity_cross_confirmation,
   );
 }
 

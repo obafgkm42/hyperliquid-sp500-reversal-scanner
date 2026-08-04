@@ -1,5 +1,6 @@
 import { renderMarketBriefChart } from "./chart";
 import { loadConfig } from "./config";
+import { handleDiscordInteraction } from "./discord-interactions";
 import {
   publicScanResult,
   sendMarketBrief,
@@ -86,8 +87,26 @@ export default {
     );
   },
 
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(
+    request: Request,
+    env: Env,
+    context: ExecutionContext,
+  ): Promise<Response> {
     const url = new URL(request.url);
+    if (
+      request.method === "POST" &&
+      url.pathname === "/discord/interactions"
+    ) {
+      const config = loadConfig(env);
+      return handleDiscordInteraction(request, {
+        publicKey: env.DISCORD_APPLICATION_PUBLIC_KEY,
+        allowedGuildId: env.DISCORD_GUILD_ID,
+        language: config.language,
+        getStatus: () =>
+          runScan(config, new Date(), false, false, null),
+        waitUntil: (promise) => context.waitUntil(promise),
+      });
+    }
     if (request.method !== "GET" || url.pathname !== "/scan") {
       return Response.json(
         {

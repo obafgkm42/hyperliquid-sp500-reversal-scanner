@@ -15,7 +15,12 @@ when possible. Remove or replace all personal and production data.
 
 ## Secrets
 
-- Store `DISCORD_WEBHOOK_URL` and `MANUAL_SCAN_TOKEN` as Cloudflare secrets.
+- Store `DISCORD_WEBHOOK_URL`, `DISCORD_APPLICATION_PUBLIC_KEY`,
+  `DISCORD_GUILD_ID`, and `MANUAL_SCAN_TOKEN` as Cloudflare secrets. The public
+  key and guild ID are account-specific configuration even though they are not
+  authentication secrets.
+- Keep `DISCORD_BOT_TOKEN` local and temporary. It is used only by the command
+  registration script and must never be stored in Worker bindings or committed.
 - Use `.dev.vars` only for local development; it is ignored by Git.
 - Never place secrets in `wrangler.toml`, screenshots, logs, fixtures, or issues.
 - Rotate a Discord webhook or token immediately if it is exposed.

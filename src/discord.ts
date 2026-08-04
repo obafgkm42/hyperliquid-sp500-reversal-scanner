@@ -1,8 +1,15 @@
 import type { ChartAttachment } from "./chart";
 import { localizeDiagnostic } from "./i18n";
+import {
+  formatMarketFragilityDataQuality,
+  formatMarketFragilityIndicatorLabel,
+  formatMarketFragilityLevel,
+  formatMarketFragilityStressScore,
+  formatMarketFragilitySummary,
+  marketFragilityColor,
+} from "./market-fragility-format";
 import type {
   Language,
-  MarketFragilityIndicatorId,
   MarketFragilitySnapshot,
   NotificationOpportunity,
   ReversalLocation,
@@ -215,8 +222,8 @@ export async function sendMarketBrief(
                 ? "SP500 Reversal Scanner 30-Minute Brief"
                 : "SP500 反轉掃描半小時簡報"
               : english
-                ? `SP500 Market Status · ${formatFragilityLevel(fragility)}`
-                : `SP500 市場狀態 · ${formatFragilityLevel(fragility)}`,
+                ? `SP500 Market Status · ${formatMarketFragilityLevel(fragility)}`
+                : `SP500 市場狀態 · ${formatMarketFragilityLevel(fragility)}`,
           description: buildMarketBriefDescription(
             result,
             language,
@@ -229,7 +236,7 @@ export async function sendMarketBrief(
                 : result.watch !== null
                   ? 0x95a5a6
                   : 0x3498db
-              : fragilityColor(fragility),
+              : marketFragilityColor(fragility),
           fields,
           image:
             chart === undefined
@@ -491,7 +498,7 @@ function buildMarketBriefDescription(
     return [
       ...(fragility === undefined
         ? []
-        : [marketFragilitySummary(fragility, language)]),
+        : [formatMarketFragilitySummary(fragility, language)]),
       `${result.market} latest ${formatNullableNumber(result.latestPrice)}; session range ${formatNullableNumber(result.sessionLow)}–${formatNullableNumber(result.sessionHigh)}.`,
       `${signalSummary}; analyzed ${result.candleCount} completed 5m candles.`,
       `Status: ${localizeDiagnostic(result.status, language)}`,
@@ -501,7 +508,7 @@ function buildMarketBriefDescription(
   return [
     ...(fragility === undefined
       ? []
-      : [marketFragilitySummary(fragility, language)]),
+      : [formatMarketFragilitySummary(fragility, language)]),
     `${result.market} 最新 ${formatNullableNumber(result.latestPrice)}；日內區間 ${formatNullableNumber(result.sessionLow)}–${formatNullableNumber(result.sessionHigh)}。`,
     `${signalSummary}；已分析 ${result.candleCount} 根完成 5m K。`,
     `狀態：${localizeDiagnostic(result.status, language)}`,
@@ -526,7 +533,7 @@ function buildMarketBriefNotificationSummary(
     return [
       fragility === undefined
         ? "SP500 30-minute brief"
-        : `SP500 ${formatFragilityLevel(fragility)} · ${formatFragilityStressScore(fragility, language)} · ${fragility.stressedIndicatorCount}/${fragility.availableIndicatorCount} repair mechanisms stressed`,
+        : `SP500 ${formatMarketFragilityLevel(fragility)} · ${formatMarketFragilityStressScore(fragility, language)} · ${fragility.stressedIndicatorCount}/${fragility.availableIndicatorCount} repair mechanisms stressed`,
       `Latest ${formatNullableNumber(result.latestPrice)}`,
       `Session ${formatNullableNumber(result.sessionLow)}–${formatNullableNumber(result.sessionHigh)}`,
       signalSummary,
@@ -537,7 +544,7 @@ function buildMarketBriefNotificationSummary(
   return [
     fragility === undefined
       ? "SP500 半小時簡報"
-      : `SP500 市場狀態 ${formatFragilityLevel(fragility)} · ${formatFragilityStressScore(fragility, language)} · ${fragility.stressedIndicatorCount}/${fragility.availableIndicatorCount} 修復機制受壓`,
+      : `SP500 市場狀態 ${formatMarketFragilityLevel(fragility)} · ${formatMarketFragilityStressScore(fragility, language)} · ${fragility.stressedIndicatorCount}/${fragility.availableIndicatorCount} 修復機制受壓`,
     `最新 ${formatNullableNumber(result.latestPrice)}`,
     `日內 ${formatNullableNumber(result.sessionLow)}–${formatNullableNumber(result.sessionHigh)}`,
     signalSummary,
@@ -561,13 +568,13 @@ function marketFragilityFields(
       : stressedIndicators
           .map(
             (indicator) =>
-              `• ${fragilityIndicatorLabel(indicator.id, language)}: ${indicator.displayValue}`,
+              `• ${formatMarketFragilityIndicatorLabel(indicator.id, language)}: ${indicator.displayValue}`,
           )
           .join("\n");
   return [
     {
       name: english ? "Market resilience" : "市場韌性",
-      value: marketFragilitySummary(fragility, language),
+      value: formatMarketFragilitySummary(fragility, language),
       inline: false,
     },
     {
@@ -577,92 +584,10 @@ function marketFragilityFields(
     },
     {
       name: english ? "Data coverage" : "資料覆蓋",
-      value: `${fragility.availableIndicatorCount}/${fragility.totalIndicatorCount} · ${fragilityDataQualityLabel(fragility, language)}`,
+      value: `${fragility.availableIndicatorCount}/${fragility.totalIndicatorCount} · ${formatMarketFragilityDataQuality(fragility, language)}`,
       inline: true,
     },
   ];
-}
-
-function marketFragilitySummary(
-  fragility: MarketFragilitySnapshot,
-  language: Language,
-): string {
-  const level = formatFragilityLevel(fragility);
-  const stressScore = formatFragilityStressScore(fragility, language);
-  if (language === "en") {
-    return `${level} · ${stressScore} · ${fragility.stressedIndicatorCount}/${fragility.availableIndicatorCount} repair mechanisms stressed`;
-  }
-  return `${level} · ${stressScore} · ${fragility.stressedIndicatorCount}/${fragility.availableIndicatorCount} 個修復機制受壓`;
-}
-
-function formatFragilityLevel(fragility: MarketFragilitySnapshot): string {
-  return fragility.level.toUpperCase();
-}
-
-function formatFragilityStressScore(
-  fragility: MarketFragilitySnapshot,
-  language: Language,
-): string {
-  const score = fragility.score === null ? "n/a" : `${fragility.score}/100`;
-  return language === "en" ? `stress ${score}` : `壓力 ${score}`;
-}
-
-function fragilityDataQualityLabel(
-  fragility: MarketFragilitySnapshot,
-  language: Language,
-): string {
-  if (language === "en") {
-    return fragility.dataQuality;
-  }
-  if (fragility.dataQuality === "full") {
-    return "完整";
-  }
-  if (fragility.dataQuality === "partial") {
-    return "部分";
-  }
-  return "不足";
-}
-
-function fragilityIndicatorLabel(
-  id: MarketFragilityIndicatorId,
-  language: Language,
-): string {
-  const englishLabels: Record<MarketFragilityIndicatorId, string> = {
-    session_loss: "session loss",
-    vwap_repair_failure: "VWAP repair failure",
-    poor_close_location: "poor close location",
-    downside_tail_cluster: "downside-tail cluster",
-    mega_cap_breadth: "mega-cap breadth",
-    equity_cross_confirmation: "SP500 / XYZ100 confirmation",
-  };
-  if (language === "en") {
-    return englishLabels[id];
-  }
-  const chineseLabels: Record<MarketFragilityIndicatorId, string> = {
-    session_loss: "時段跌幅",
-    vwap_repair_failure: "VWAP 修復失敗",
-    poor_close_location: "收盤承接偏弱",
-    downside_tail_cluster: "下跌尾部群聚",
-    mega_cap_breadth: "大型股廣度惡化",
-    equity_cross_confirmation: "SP500 / XYZ100 同步走弱",
-  };
-  return chineseLabels[id];
-}
-
-function fragilityColor(fragility: MarketFragilitySnapshot): number {
-  if (fragility.level === "panic") {
-    return 0xc0392b;
-  }
-  if (fragility.level === "breaking") {
-    return 0xe67e22;
-  }
-  if (fragility.level === "fragile") {
-    return 0xf1c40f;
-  }
-  if (fragility.level === "resilient") {
-    return 0x2ecc71;
-  }
-  return 0x95a5a6;
 }
 
 function shortNotificationStatus(status: string): string {

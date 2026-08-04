@@ -1,5 +1,7 @@
 export interface Env {
   DISCORD_WEBHOOK_URL: string;
+  DISCORD_APPLICATION_PUBLIC_KEY?: string;
+  DISCORD_GUILD_ID?: string;
   MANUAL_SCAN_TOKEN?: string;
   LANGUAGE?: string;
   HYPERLIQUID_COIN?: string;
