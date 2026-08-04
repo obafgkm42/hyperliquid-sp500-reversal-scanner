@@ -5,6 +5,7 @@ import {
   getBriefIntervalMinutes,
   getPreviousScanTime,
   getScheduleDecision,
+  isRthClose,
   selectAnalysisSession,
 } from "../src/market-hours";
 import type { Candle } from "../src/types";
@@ -112,6 +113,14 @@ describe("getBriefIntervalMinutes", () => {
         120,
       ),
     ).toBe(120);
+  });
+});
+
+describe("isRthClose", () => {
+  it("identifies the cash-session close boundary in both DST offsets", () => {
+    expect(isRthClose(new Date("2026-06-23T20:00:00Z"))).toBe(true);
+    expect(isRthClose(new Date("2026-12-15T21:00:00Z"))).toBe(true);
+    expect(isRthClose(new Date("2026-06-23T19:55:00Z"))).toBe(false);
   });
 });
 

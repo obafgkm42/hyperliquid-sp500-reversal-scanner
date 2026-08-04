@@ -164,3 +164,41 @@ export interface ScanResult {
   latestPrice: number | null;
   status: string;
 }
+
+export interface ResiliencePriceSnapshot {
+  sessionKey: string;
+  timestamp: number;
+  price: number;
+  sessionHigh: number;
+  sessionLow: number;
+  isSessionClose: boolean;
+}
+
+export type ResilienceShockCompletionReason =
+  | "recovered"
+  | "session_close";
+
+export interface ResilienceShockEvent {
+  id: string;
+  sessionKey: string;
+  startedAt: number;
+  triggerPrice: number;
+  sessionHighAtTrigger: number;
+  troughPrice: number;
+  troughAt: number;
+  oneHourPrice: number | null;
+  twoHourPrice: number | null;
+  closePrice: number | null;
+  recoveredAt: number | null;
+  completedAt: number | null;
+  completionReason: ResilienceShockCompletionReason | null;
+}
+
+export interface ResilienceDecayState {
+  version: 1;
+  market: string;
+  sessionKey: string;
+  snapshots: ResiliencePriceSnapshot[];
+  activeShock: ResilienceShockEvent | null;
+  completedShocks: ResilienceShockEvent[];
+}

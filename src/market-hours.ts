@@ -115,6 +115,18 @@ export function getBriefIntervalMinutes(
 }
 
 /**
+ * Identify the existing five-minute boundary used for the cash-session close.
+ */
+export function isRthClose(timestamp: Date): boolean {
+  const eastern = getEasternTimeParts(timestamp);
+  return (
+    eastern.weekday !== "Sat" &&
+    eastern.weekday !== "Sun" &&
+    eastern.minuteOfDay === RTH_END_MINUTE
+  );
+}
+
+/**
  * Keep candles from the current New York date for a stable intraday baseline.
  * When no current-date candles are available, fall back to the fetched lookback
  * so overnight and weekend scans can still produce a Discord brief.

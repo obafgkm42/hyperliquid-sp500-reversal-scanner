@@ -21,8 +21,10 @@ import {
   getBriefIntervalMinutes,
   getPreviousScanTime,
   getScheduleDecision,
+  isRthClose,
   selectAnalysisSession,
 } from "./market-hours";
+import { updateResilienceDecayState } from "./resilience-decay";
 import {
   clearRateLimitIncident,
   getLastSuccessfulCandleEnd,
@@ -41,6 +43,7 @@ import type {
   Candle,
   Env,
   MarketFragilitySnapshot,
+  ResiliencePriceSnapshot,
   ScanResult,
   ScannerConfig,
 } from "./types";
@@ -172,6 +175,13 @@ async function runScan(
     sessionCandles,
     thresholds,
   );
+  await maybeRecordResilienceSnapshot(
+    config,
+    now,
+    sendBrief,
+    analysisSession.kind,
+    sessionCandles,
+  );
   const notificationOpportunities =
     notify &&
     analysisSession.notificationsEnabled &&
@@ -301,6 +311,60 @@ async function runScan(
     }
   }
   return { scan: result, fragility };
+}
+
+async function maybeRecordResilienceSnapshot(
+  config: ScannerConfig,
+  now: Date,
+  briefDue: boolean,
+  sessionKind: ReturnType<typeof selectAnalysisSession>["kind"],
+  sessionCandles: readonly Candle[],
+): Promise<void> {
+  if (
+    !briefDue ||
+    config.hyperliquidCoin !== "xyz:SP500" ||
+    sessionKind !== "rth"
+  ) {
+    return;
+  }
+  const firstCandle = sessionCandles[0];
+  const latestCandle = sessionCandles.at(-1);
+  if (firstCandle === undefined || latestCandle === undefined) {
+    return;
+  }
+  const snapshot: ResiliencePriceSnapshot = {
+    sessionKey: new Date(firstCandle.startTime)
+      .toISOString()
+      .slice(0, 10),
+    timestamp: latestCandle.endTime,
+    price: latestCandle.close,
+    sessionHigh: Math.max(
+      ...sessionCandles.map((candle) => candle.high),
+    ),
+    sessionLow: Math.min(
+      ...sessionCandles.map((candle) => candle.low),
+    ),
+    isSessionClose: isRthClose(now),
+  };
+  const update = await updateResilienceDecayState(
+    config.scannerState,
+    config.hyperliquidCoin,
+    snapshot,
+  );
+  console.log(
+    JSON.stringify({
+      status: "resilience_decay_state",
+      market: config.hyperliquidCoin,
+      sessionKey: snapshot.sessionKey,
+      changed: update.changed,
+      snapshotCount: update.state?.snapshots.length ?? 0,
+      completedShockCount: update.state?.completedShocks.length ?? 0,
+      activeShock: update.state?.activeShock?.id ?? null,
+      shockStarted: update.shockStarted,
+      shockCompleted: update.shockCompleted,
+      approximateCpuMs: update.approximateCpuMs,
+    }),
+  );
 }
 
 async function calculateMarketFragility(
