@@ -66,6 +66,13 @@ available with four price-only indicators and explicitly labels the data
 coverage as partial. Scheduled `BREAKING` and `PANIC` briefs mention `@everyone`;
 lower-severity briefs do not.
 
+Due RTH scans also maintain a separate event-level resilience-decay diagnostic.
+It compares recovery after similar drawdowns on a fixed half-hour grid and can
+show `FADING` only on the detailed brief. It does not change fragility levels,
+mentions, colors, or reversal decisions. The scoring contract, data-quality
+rules, tests, and limitations are documented in
+[Resilience decay methodology](docs/resilience-decay-methodology.md).
+
 ## Why bullish and bearish signals are asymmetric
 
 The current policy treats bullish bottom-reversal candidates as the primary

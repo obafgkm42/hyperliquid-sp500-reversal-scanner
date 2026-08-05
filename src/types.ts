@@ -187,15 +187,18 @@ export interface ResilienceShockEvent {
   troughPrice: number;
   troughAt: number;
   oneHourPrice: number | null;
+  oneHourTroughPrice: number | null;
   twoHourPrice: number | null;
+  twoHourTroughPrice: number | null;
   closePrice: number | null;
+  closeTroughPrice: number | null;
   recoveredAt: number | null;
   completedAt: number | null;
   completionReason: ResilienceShockCompletionReason | null;
 }
 
 export interface ResilienceDecayState {
-  version: 1;
+  version: 2;
   market: string;
   sessionKey: string;
   snapshots: ResiliencePriceSnapshot[];
@@ -225,5 +228,6 @@ export interface ResilienceDecayMetrics {
   recentEventScoreSlope: number | null;
   decayScore: number | null;
   scoredShockCount: number;
+  unscoredShockCount: number;
   eventScores: ResilienceEventScore[];
 }

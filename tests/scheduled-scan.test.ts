@@ -108,6 +108,53 @@ describe("scheduled catch-up scan", () => {
     expect(payload.embeds[0]?.title).toContain("BREAKING");
   });
 
+  it("persists fixed-grid resilience snapshots when the brief is not due", async () => {
+    const state = memoryKv({ "last-version-notice": "local-dev" });
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (
+        input: string | URL | Request,
+        init?: RequestInit,
+      ): Promise<Response> => {
+        if (String(input) === HYPERLIQUID_INFO_URL) {
+          const body = JSON.parse(String(init?.body)) as { type: string };
+          return body.type === "metaAndAssetCtxs"
+            ? new Response("context unavailable", { status: 400 })
+            : Response.json(hyperliquidCandles().slice(0, 9));
+        }
+        return new Response(null, { status: 204 });
+      },
+    );
+    const waitUntilPromises: Promise<unknown>[] = [];
+
+    await worker.scheduled(
+      scheduledController("2026-07-23T15:30:00.000Z"),
+      {
+        ...baseEnv(),
+        BRIEF_INTERVAL_MINUTES: "60",
+        SCANNER_STATE: state,
+      },
+      waitUntilContext(waitUntilPromises),
+    );
+    await Promise.all(waitUntilPromises);
+
+    const rawState = await state.get("resilience-decay:xyz:SP500");
+    const resilienceState = JSON.parse(String(rawState)) as {
+      version: number;
+      snapshots: Array<{ timestamp: number }>;
+      activeShock: { oneHourTroughPrice: number | null } | null;
+    };
+    expect(resilienceState.version).toBe(2);
+    expect(resilienceState.snapshots).toHaveLength(2);
+    expect(resilienceState.snapshots[1]?.timestamp).toBe(
+      Date.parse("2026-07-23T15:29:59.999Z"),
+    );
+    expect(resilienceState.activeShock).toMatchObject({
+      oneHourTroughPrice: null,
+    });
+  });
+
   it("recovers from the last successful candle after a rate-limited scan", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const state = memoryKv({

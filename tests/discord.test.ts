@@ -676,6 +676,7 @@ function fadingResilienceMetrics(): ResilienceDecayMetrics {
     recentEventScoreSlope: -5,
     decayScore: 50,
     scoredShockCount: 8,
+    unscoredShockCount: 0,
     eventScores: [],
   };
 }

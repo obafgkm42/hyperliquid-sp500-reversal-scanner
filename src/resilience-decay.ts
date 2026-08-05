@@ -7,7 +7,7 @@ import type {
 } from "./types";
 
 const RESILIENCE_STATE_PREFIX = "resilience-decay";
-const RESILIENCE_STATE_VERSION = 1 as const;
+const RESILIENCE_STATE_VERSION = 2 as const;
 const SHOCK_DROP_THRESHOLD = 0.006;
 const CHECKPOINT_ONE_HOUR_MS = 60 * 60 * 1_000;
 const CHECKPOINT_TWO_HOURS_MS = 2 * 60 * 60 * 1_000;
@@ -24,6 +24,9 @@ export interface ResilienceDecayUpdate {
   approximateCpuMs: number;
   shockStarted: boolean;
   shockCompleted: boolean;
+  ignoredReason: "duplicate" | "out_of_order" | null;
+  recordedSnapshotCount: number;
+  ignoredSnapshotCount: number;
 }
 
 /**
@@ -37,6 +40,20 @@ export async function updateResilienceDecayState(
   market: string,
   snapshot: ResiliencePriceSnapshot,
 ): Promise<ResilienceDecayUpdate> {
+  return updateResilienceDecayStateBatch(state, market, [snapshot]);
+}
+
+/**
+ * Record an ordered snapshot batch with one KV read and at most one write.
+ *
+ * Catch-up batches keep the decay sampling grid stable after a missed Worker
+ * invocation or a status-brief cadence change.
+ */
+export async function updateResilienceDecayStateBatch(
+  state: KVNamespace | undefined,
+  market: string,
+  snapshots: readonly ResiliencePriceSnapshot[],
+): Promise<ResilienceDecayUpdate> {
   if (state === undefined) {
     return {
       state: null,
@@ -44,38 +61,55 @@ export async function updateResilienceDecayState(
       approximateCpuMs: 0,
       shockStarted: false,
       shockCompleted: false,
+      ignoredReason: null,
+      recordedSnapshotCount: 0,
+      ignoredSnapshotCount: 0,
     };
   }
 
   const rawState = await state.get(resilienceStateKey(market));
-  const previousState = parseState(rawState, market);
+  let nextState = parseState(rawState, market);
   const processingStartedAt = performance.now();
+  const ignoredReasons = new Set<"duplicate" | "out_of_order">();
+  let recordedSnapshotCount = 0;
+  let ignoredSnapshotCount = 0;
+  let shockStarted = false;
+  let shockCompleted = false;
 
-  if (previousState !== null && hasSnapshot(previousState, snapshot)) {
-    return {
-      state: previousState,
-      changed: false,
-      approximateCpuMs: elapsedMilliseconds(processingStartedAt),
-      shockStarted: false,
-      shockCompleted: false,
-    };
+  for (const snapshot of snapshots) {
+    const ignoredReason = snapshotIgnoredReason(nextState, snapshot);
+    if (ignoredReason !== null) {
+      ignoredReasons.add(ignoredReason);
+      ignoredSnapshotCount += 1;
+      continue;
+    }
+    const update = applySnapshot(nextState, market, snapshot);
+    nextState = update.state;
+    recordedSnapshotCount += 1;
+    shockStarted ||= update.shockStarted;
+    shockCompleted ||= update.shockCompleted;
   }
 
-  const update = applySnapshot(previousState, market, snapshot);
-  const serializedState = JSON.stringify(update.state);
-  const previousSerializedState =
-    previousState === null ? null : JSON.stringify(previousState);
-  const changed = serializedState !== previousSerializedState;
-  if (changed) {
+  const serializedState =
+    nextState === null ? null : JSON.stringify(nextState);
+  const changed = serializedState !== rawState;
+  if (changed && serializedState !== null) {
     await state.put(resilienceStateKey(market), serializedState);
   }
+  const ignoredReason =
+    recordedSnapshotCount === 0 && ignoredReasons.size === 1
+      ? [...ignoredReasons][0] ?? null
+      : null;
 
   return {
-    state: update.state,
+    state: nextState,
     changed,
     approximateCpuMs: elapsedMilliseconds(processingStartedAt),
-    shockStarted: update.shockStarted,
-    shockCompleted: update.shockCompleted,
+    shockStarted,
+    shockCompleted,
+    ignoredReason,
+    recordedSnapshotCount,
+    ignoredSnapshotCount,
   };
 }
 
@@ -89,11 +123,14 @@ export async function updateResilienceDecayState(
 export function calculateResilienceMetrics(
   state: ResilienceDecayState,
 ): ResilienceDecayMetrics {
-  const eventScores = state.completedShocks.flatMap((event) => {
-    const score = calculateResilienceEventScore(event);
-    return score === null ? [] : [score];
-  });
-  const recentScores = eventScores.slice(-3);
+  const eventScores = [...state.completedShocks]
+    .sort((left, right) => left.startedAt - right.startedAt)
+    .flatMap((event) => {
+      const score = calculateResilienceEventScore(event);
+      return score === null ? [] : [score];
+    });
+  const recentScores =
+    eventScores.length >= 3 ? eventScores.slice(-3) : [];
   const baselineScores =
     eventScores.length >= 8 ? eventScores.slice(-8, -3) : [];
   const recentResilience = meanEventScores(recentScores);
@@ -121,6 +158,8 @@ export function calculateResilienceMetrics(
     recentEventScoreSlope,
     decayScore,
     scoredShockCount: eventScores.length,
+    unscoredShockCount:
+      state.completedShocks.length - eventScores.length,
     eventScores,
   };
 }
@@ -134,14 +173,17 @@ export function calculateResilienceEventScore(
   const oneHourRecoveryRatio = calculateRecoveryRatio(
     event,
     event.oneHourPrice,
+    event.oneHourTroughPrice,
   );
   const twoHourRecoveryRatio = calculateRecoveryRatio(
     event,
     event.twoHourPrice,
+    event.twoHourTroughPrice,
   );
   const closeRecoveryRatio = calculateRecoveryRatio(
     event,
     event.closePrice,
+    event.closeTroughPrice,
   );
   if (
     oneHourRecoveryRatio === null ||
@@ -253,8 +295,13 @@ function appendSnapshot(
 
   const closeObservedEvents = snapshot.isSessionClose
     ? observedCompletedShocks.map((event) =>
-        event.closePrice === null
-          ? { ...event, closePrice: snapshot.price }
+        event.closePrice === null || event.closeTroughPrice === null
+          ? {
+              ...event,
+              closePrice: event.closePrice ?? snapshot.price,
+              closeTroughPrice:
+                event.closeTroughPrice ?? event.troughPrice,
+            }
           : event,
       )
     : observedCompletedShocks;
@@ -307,22 +354,36 @@ function observeEvent(
   event: ResilienceShockEvent,
   snapshot: ResiliencePriceSnapshot,
 ): ResilienceShockEvent {
+  // A recovered event is complete. Freezing its trough prevents a later,
+  // separate sell-off from rewriting the severity of the earlier shock.
+  const canUpdateTrough = event.completedAt === null;
+  const troughPrice =
+    canUpdateTrough && snapshot.price < event.troughPrice
+      ? snapshot.price
+      : event.troughPrice;
+  const troughAt =
+    canUpdateTrough && snapshot.price < event.troughPrice
+      ? snapshot.timestamp
+      : event.troughAt;
+  const recordOneHour =
+    event.oneHourPrice === null &&
+    snapshot.timestamp >= event.startedAt + CHECKPOINT_ONE_HOUR_MS;
+  const recordTwoHours =
+    event.twoHourPrice === null &&
+    snapshot.timestamp >= event.startedAt + CHECKPOINT_TWO_HOURS_MS;
+
   return {
     ...event,
-    troughPrice:
-      snapshot.price < event.troughPrice ? snapshot.price : event.troughPrice,
-    troughAt:
-      snapshot.price < event.troughPrice ? snapshot.timestamp : event.troughAt,
-    oneHourPrice:
-      event.oneHourPrice === null &&
-      snapshot.timestamp >= event.startedAt + CHECKPOINT_ONE_HOUR_MS
-        ? snapshot.price
-        : event.oneHourPrice,
-    twoHourPrice:
-      event.twoHourPrice === null &&
-      snapshot.timestamp >= event.startedAt + CHECKPOINT_TWO_HOURS_MS
-        ? snapshot.price
-        : event.twoHourPrice,
+    troughPrice,
+    troughAt,
+    oneHourPrice: recordOneHour ? snapshot.price : event.oneHourPrice,
+    oneHourTroughPrice: recordOneHour
+      ? troughPrice
+      : event.oneHourTroughPrice,
+    twoHourPrice: recordTwoHours ? snapshot.price : event.twoHourPrice,
+    twoHourTroughPrice: recordTwoHours
+      ? troughPrice
+      : event.twoHourTroughPrice,
   };
 }
 
@@ -336,8 +397,11 @@ function startEvent(snapshot: ResiliencePriceSnapshot): ResilienceShockEvent {
     troughPrice: snapshot.price,
     troughAt: snapshot.timestamp,
     oneHourPrice: null,
+    oneHourTroughPrice: null,
     twoHourPrice: null,
+    twoHourTroughPrice: null,
     closePrice: null,
+    closeTroughPrice: null,
     recoveredAt: null,
     completedAt: null,
     completionReason: null,
@@ -352,6 +416,9 @@ function completeEvent(
   return {
     ...event,
     closePrice: snapshot.isSessionClose ? snapshot.price : event.closePrice,
+    closeTroughPrice: snapshot.isSessionClose
+      ? event.troughPrice
+      : event.closeTroughPrice,
     recoveredAt:
       reason === "recovered" ? snapshot.timestamp : event.recoveredAt,
     completedAt: snapshot.timestamp,
@@ -366,6 +433,7 @@ function finalizeEventAtClose(
   return {
     ...event,
     closePrice: closeSnapshot.price,
+    closeTroughPrice: event.troughPrice,
     completedAt: event.completedAt ?? closeSnapshot.timestamp,
     completionReason: event.completionReason ?? "session_close",
   };
@@ -380,15 +448,26 @@ function isShockTrigger(snapshot: ResiliencePriceSnapshot): boolean {
 function calculateRecoveryRatio(
   event: ResilienceShockEvent,
   recoveryPrice: number | null,
+  checkpointTroughPrice: number | null,
 ): number | null {
-  if (recoveryPrice === null) {
+  if (
+    recoveryPrice === null ||
+    checkpointTroughPrice === null ||
+    !Number.isFinite(recoveryPrice) ||
+    !Number.isFinite(checkpointTroughPrice)
+  ) {
     return null;
   }
-  const recoveryRange = event.sessionHighAtTrigger - event.troughPrice;
+  const recoveryRange =
+    event.sessionHighAtTrigger - checkpointTroughPrice;
   if (recoveryRange <= 0) {
     return null;
   }
-  return clamp((recoveryPrice - event.troughPrice) / recoveryRange, 0, 1);
+  return clamp(
+    (recoveryPrice - checkpointTroughPrice) / recoveryRange,
+    0,
+    1,
+  );
 }
 
 function meanEventScores(
@@ -485,12 +564,20 @@ function trimCompletedShocks(
   return completedShocks.slice(-MAX_COMPLETED_SHOCKS);
 }
 
-function hasSnapshot(
-  state: ResilienceDecayState,
+function snapshotIgnoredReason(
+  state: ResilienceDecayState | null,
   snapshot: ResiliencePriceSnapshot,
-): boolean {
-  return state.sessionKey === snapshot.sessionKey &&
-    state.snapshots.some((item) => item.timestamp === snapshot.timestamp);
+): ResilienceDecayUpdate["ignoredReason"] {
+  const latestSnapshot = state?.snapshots.at(-1);
+  if (latestSnapshot === undefined) {
+    return null;
+  }
+  if (snapshot.timestamp === latestSnapshot.timestamp) {
+    return "duplicate";
+  }
+  return snapshot.timestamp < latestSnapshot.timestamp
+    ? "out_of_order"
+    : null;
 }
 
 function parseState(
@@ -505,29 +592,164 @@ function parseState(
     if (!isResilienceDecayState(parsed, market)) {
       return null;
     }
-    return parsed;
+    return normalizeState(parsed);
   } catch {
     return null;
   }
 }
 
+type StoredResilienceShockEvent = Omit<
+  ResilienceShockEvent,
+  | "oneHourTroughPrice"
+  | "twoHourTroughPrice"
+  | "closeTroughPrice"
+> & {
+  oneHourTroughPrice?: number | null;
+  twoHourTroughPrice?: number | null;
+  closeTroughPrice?: number | null;
+};
+
+interface StoredResilienceDecayState {
+  version: 1 | 2;
+  market: string;
+  sessionKey: string;
+  snapshots: ResiliencePriceSnapshot[];
+  activeShock: StoredResilienceShockEvent | null;
+  completedShocks: StoredResilienceShockEvent[];
+}
+
 function isResilienceDecayState(
   value: unknown,
   market: string,
-): value is ResilienceDecayState {
+): value is StoredResilienceDecayState {
   if (typeof value !== "object" || value === null) {
     return false;
   }
-  const candidate = value as Partial<ResilienceDecayState>;
+  const candidate = value as Partial<StoredResilienceDecayState>;
   return (
-    candidate.version === RESILIENCE_STATE_VERSION &&
+    (candidate.version === 1 ||
+      candidate.version === RESILIENCE_STATE_VERSION) &&
     candidate.market === market &&
     typeof candidate.sessionKey === "string" &&
     Array.isArray(candidate.snapshots) &&
+    candidate.snapshots.every(isResiliencePriceSnapshot) &&
     Array.isArray(candidate.completedShocks) &&
+    candidate.completedShocks.every((event) =>
+      isResilienceShockEvent(event, candidate.version ?? 1),
+    ) &&
     (candidate.activeShock === null ||
-      typeof candidate.activeShock === "object")
+      isResilienceShockEvent(
+        candidate.activeShock,
+        candidate.version ?? 1,
+      ))
   );
+}
+
+function normalizeState(
+  state: StoredResilienceDecayState,
+): ResilienceDecayState {
+  return {
+    ...state,
+    version: RESILIENCE_STATE_VERSION,
+    activeShock:
+      state.activeShock === null
+        ? null
+        : normalizeShockEvent(state.activeShock),
+    completedShocks: state.completedShocks.map(normalizeShockEvent),
+  };
+}
+
+function normalizeShockEvent(
+  event: StoredResilienceShockEvent,
+): ResilienceShockEvent {
+  return {
+    ...event,
+    oneHourTroughPrice: normalizeCheckpointTrough(
+      event.oneHourTroughPrice,
+    ),
+    twoHourTroughPrice: normalizeCheckpointTrough(
+      event.twoHourTroughPrice,
+    ),
+    closeTroughPrice: normalizeCheckpointTrough(
+      event.closeTroughPrice,
+    ),
+  };
+}
+
+function normalizeCheckpointTrough(value: unknown): number | null {
+  return isPositiveFiniteNumber(value) ? value : null;
+}
+
+function isResiliencePriceSnapshot(
+  value: unknown,
+): value is ResiliencePriceSnapshot {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const snapshot = value as Partial<ResiliencePriceSnapshot>;
+  return (
+    typeof snapshot.sessionKey === "string" &&
+    isFiniteNumber(snapshot.timestamp) &&
+    isPositiveFiniteNumber(snapshot.price) &&
+    isPositiveFiniteNumber(snapshot.sessionHigh) &&
+    isPositiveFiniteNumber(snapshot.sessionLow) &&
+    snapshot.sessionLow <= snapshot.price &&
+    snapshot.price <= snapshot.sessionHigh &&
+    typeof snapshot.isSessionClose === "boolean"
+  );
+}
+
+function isResilienceShockEvent(
+  value: unknown,
+  version: 1 | 2,
+): value is StoredResilienceShockEvent {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const event = value as Partial<ResilienceShockEvent>;
+  const checkpointTroughsAreValid =
+    version === 1 ||
+    (isNullablePositiveFiniteNumber(event.oneHourTroughPrice) &&
+      isNullablePositiveFiniteNumber(event.twoHourTroughPrice) &&
+      isNullablePositiveFiniteNumber(event.closeTroughPrice));
+  return (
+    typeof event.id === "string" &&
+    typeof event.sessionKey === "string" &&
+    isFiniteNumber(event.startedAt) &&
+    isPositiveFiniteNumber(event.triggerPrice) &&
+    isPositiveFiniteNumber(event.sessionHighAtTrigger) &&
+    isPositiveFiniteNumber(event.troughPrice) &&
+    isFiniteNumber(event.troughAt) &&
+    isNullablePositiveFiniteNumber(event.oneHourPrice) &&
+    isNullablePositiveFiniteNumber(event.twoHourPrice) &&
+    isNullablePositiveFiniteNumber(event.closePrice) &&
+    checkpointTroughsAreValid &&
+    isNullableFiniteNumber(event.recoveredAt) &&
+    isNullableFiniteNumber(event.completedAt) &&
+    (event.completionReason === null ||
+      event.completionReason === "recovered" ||
+      event.completionReason === "session_close")
+  );
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isPositiveFiniteNumber(value: unknown): value is number {
+  return isFiniteNumber(value) && value > 0;
+}
+
+function isNullableFiniteNumber(
+  value: unknown,
+): value is number | null {
+  return value === null || isFiniteNumber(value);
+}
+
+function isNullablePositiveFiniteNumber(
+  value: unknown,
+): value is number | null {
+  return value === null || isPositiveFiniteNumber(value);
 }
 
 function resilienceStateKey(market: string): string {

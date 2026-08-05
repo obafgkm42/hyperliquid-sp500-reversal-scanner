@@ -26,7 +26,7 @@ import {
 } from "./market-hours";
 import {
   calculateResilienceMetrics,
-  updateResilienceDecayState,
+  updateResilienceDecayStateBatch,
 } from "./resilience-decay";
 import type { ResilienceDecayUpdate } from "./resilience-decay";
 import {
@@ -54,6 +54,7 @@ import type {
 
 const VERSION_NOTICE_KEY = "last-version-notice";
 const RECENT_VERSION_NOTICE_WINDOW_MS = 20 * 60 * 1000;
+const RESILIENCE_SNAPSHOT_INTERVAL_MS = 30 * 60 * 1_000;
 let lastVersionNoticeSentFor: string | null = null;
 
 interface ScanExecutionResult {
@@ -181,8 +182,7 @@ async function runScan(
   );
   const resilienceUpdate = await maybeRecordResilienceSnapshot(
     config,
-    now,
-    sendBrief,
+    notify || sendBrief,
     analysisSession.kind,
     sessionCandles,
   );
@@ -205,6 +205,7 @@ async function runScan(
         recentEventScoreSlope: resilienceMetrics.recentEventScoreSlope,
         decayScore: resilienceMetrics.decayScore,
         scoredShockCount: resilienceMetrics.scoredShockCount,
+        unscoredShockCount: resilienceMetrics.unscoredShockCount,
       }),
     );
   }
@@ -342,57 +343,84 @@ async function runScan(
 
 async function maybeRecordResilienceSnapshot(
   config: ScannerConfig,
-  now: Date,
-  briefDue: boolean,
+  collectionEnabled: boolean,
   sessionKind: ReturnType<typeof selectAnalysisSession>["kind"],
   sessionCandles: readonly Candle[],
 ): Promise<ResilienceDecayUpdate | null> {
   if (
-    !briefDue ||
+    !collectionEnabled ||
     config.hyperliquidCoin !== "xyz:SP500" ||
     sessionKind !== "rth"
   ) {
     return null;
   }
-  const firstCandle = sessionCandles[0];
-  const latestCandle = sessionCandles.at(-1);
-  if (firstCandle === undefined || latestCandle === undefined) {
+  const snapshots = buildResilienceSnapshots(sessionCandles);
+  if (snapshots.length === 0) {
     return null;
   }
-  const snapshot: ResiliencePriceSnapshot = {
-    sessionKey: new Date(firstCandle.startTime)
-      .toISOString()
-      .slice(0, 10),
-    timestamp: latestCandle.endTime,
-    price: latestCandle.close,
-    sessionHigh: Math.max(
-      ...sessionCandles.map((candle) => candle.high),
-    ),
-    sessionLow: Math.min(
-      ...sessionCandles.map((candle) => candle.low),
-    ),
-    isSessionClose: isRthClose(now),
-  };
-  const update = await updateResilienceDecayState(
+  const latestSnapshot = snapshots.at(-1);
+  const update = await updateResilienceDecayStateBatch(
     config.scannerState,
     config.hyperliquidCoin,
-    snapshot,
+    snapshots,
   );
   console.log(
     JSON.stringify({
       status: "resilience_decay_state",
       market: config.hyperliquidCoin,
-      sessionKey: snapshot.sessionKey,
+      sessionKey: latestSnapshot?.sessionKey ?? null,
       changed: update.changed,
       snapshotCount: update.state?.snapshots.length ?? 0,
+      candidateSnapshotCount: snapshots.length,
+      recordedSnapshotCount: update.recordedSnapshotCount,
+      ignoredSnapshotCount: update.ignoredSnapshotCount,
       completedShockCount: update.state?.completedShocks.length ?? 0,
       activeShock: update.state?.activeShock?.id ?? null,
       shockStarted: update.shockStarted,
       shockCompleted: update.shockCompleted,
+      ignoredReason: update.ignoredReason,
       approximateCpuMs: update.approximateCpuMs,
     }),
   );
   return update;
+}
+
+/**
+ * Build the fixed half-hour RTH sampling grid from completed five-minute
+ * candles. Rebuilding the candidates on every scheduled scan lets the state
+ * writer catch up missed boundaries without additional provider requests.
+ */
+function buildResilienceSnapshots(
+  sessionCandles: readonly Candle[],
+): ResiliencePriceSnapshot[] {
+  const firstCandle = sessionCandles[0];
+  if (firstCandle === undefined) {
+    return [];
+  }
+  const sessionKey = new Date(firstCandle.startTime)
+    .toISOString()
+    .slice(0, 10);
+  const snapshots: ResiliencePriceSnapshot[] = [];
+  let sessionHigh = Number.NEGATIVE_INFINITY;
+  let sessionLow = Number.POSITIVE_INFINITY;
+
+  for (const candle of sessionCandles) {
+    sessionHigh = Math.max(sessionHigh, candle.high);
+    sessionLow = Math.min(sessionLow, candle.low);
+    const boundaryTimestamp = candle.endTime + 1;
+    if (boundaryTimestamp % RESILIENCE_SNAPSHOT_INTERVAL_MS !== 0) {
+      continue;
+    }
+    snapshots.push({
+      sessionKey,
+      timestamp: candle.endTime,
+      price: candle.close,
+      sessionHigh,
+      sessionLow,
+      isSessionClose: isRthClose(new Date(boundaryTimestamp)),
+    });
+  }
+  return snapshots;
 }
 
 async function calculateMarketFragility(

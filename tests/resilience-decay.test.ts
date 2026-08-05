@@ -4,6 +4,7 @@ import {
   calculateResilienceEventScore,
   calculateResilienceMetrics,
   updateResilienceDecayState,
+  updateResilienceDecayStateBatch,
 } from "../src/resilience-decay";
 import type {
   ResilienceDecayState,
@@ -32,8 +33,11 @@ describe("resilience decay state", () => {
       triggerPrice: 99.4,
       troughPrice: 98.8,
       oneHourPrice: 99.5,
+      oneHourTroughPrice: 98.8,
       twoHourPrice: 99.7,
+      twoHourTroughPrice: 98.8,
       closePrice: 100,
+      closeTroughPrice: 98.8,
       completionReason: "recovered",
     });
     expect(closed.state?.activeShock).toBeNull();
@@ -78,9 +82,34 @@ describe("resilience decay state", () => {
     );
 
     expect(repeated.changed).toBe(false);
+    expect(repeated.ignoredReason).toBe("duplicate");
     expect(state.getCount).toBe(2);
     expect(state.putCount).toBe(1);
     expect(repeated.approximateCpuMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("catches up an ordered batch with one KV read and write", async () => {
+    const state = countingMemoryKv();
+    const sessionKey = "2026-08-04";
+    const firstSnapshot = snapshot(sessionKey, 0, 100, 100);
+    await record(state, firstSnapshot);
+
+    const caughtUp = await updateResilienceDecayStateBatch(
+      state,
+      "xyz:SP500",
+      [
+        firstSnapshot,
+        snapshot(sessionKey, 30, 99.5, 100),
+        snapshot(sessionKey, 60, 99, 100),
+      ],
+    );
+
+    expect(caughtUp.changed).toBe(true);
+    expect(caughtUp.recordedSnapshotCount).toBe(2);
+    expect(caughtUp.ignoredSnapshotCount).toBe(1);
+    expect(caughtUp.state?.snapshots).toHaveLength(3);
+    expect(state.getCount).toBe(2);
+    expect(state.putCount).toBe(2);
   });
 
   it("applies the weighted event score to the three recovery ratios", () => {
@@ -96,10 +125,84 @@ describe("resilience decay state", () => {
     });
   });
 
+  it("uses only the trough visible at each checkpoint", () => {
+    const event = {
+      ...completedEvent("checkpoint-troughs", 100, 90, 96, 92, 95),
+      oneHourTroughPrice: 94,
+      twoHourTroughPrice: 90,
+      closeTroughPrice: 90,
+    };
+
+    const score = calculateResilienceEventScore(event);
+
+    expect(score?.oneHourRecoveryRatio).toBeCloseTo(1 / 3);
+    expect(score?.twoHourRecoveryRatio).toBeCloseTo(0.2);
+    expect(score?.closeRecoveryRatio).toBeCloseTo(0.5);
+  });
+
+  it("freezes a recovered event trough before a later sell-off", async () => {
+    const state = countingMemoryKv();
+    const sessionKey = "2026-08-04";
+
+    await record(state, snapshot(sessionKey, 0, 100, 100));
+    await record(state, snapshot(sessionKey, 30, 99, 100));
+    await record(state, snapshot(sessionKey, 60, 99.5, 100));
+    const laterSellOff = await record(
+      state,
+      snapshot(sessionKey, 90, 98, 100),
+    );
+
+    expect(laterSellOff.state?.completedShocks[0]).toMatchObject({
+      troughPrice: 99,
+      oneHourPrice: 98,
+      oneHourTroughPrice: 99,
+      completionReason: "recovered",
+    });
+    expect(laterSellOff.state?.activeShock?.troughPrice).toBe(98);
+  });
+
+  it("keeps a checkpoint trough fixed when the active shock deepens later", async () => {
+    const state = countingMemoryKv();
+    const sessionKey = "2026-08-04";
+
+    await record(state, snapshot(sessionKey, 0, 100, 100));
+    await record(state, snapshot(sessionKey, 30, 99, 100));
+    await record(state, snapshot(sessionKey, 90, 99, 100));
+    await record(state, snapshot(sessionKey, 120, 95, 100));
+    const twoHours = await record(
+      state,
+      snapshot(sessionKey, 150, 96, 100),
+    );
+
+    expect(twoHours.state?.activeShock).toMatchObject({
+      troughPrice: 95,
+      oneHourPrice: 99,
+      oneHourTroughPrice: 99,
+      twoHourPrice: 96,
+      twoHourTroughPrice: 95,
+    });
+  });
+
+  it("ignores out-of-order snapshots instead of rewinding state", async () => {
+    const state = countingMemoryKv();
+    const sessionKey = "2026-08-04";
+
+    await record(state, snapshot(sessionKey, 60, 99, 100));
+    const stale = await record(
+      state,
+      snapshot(sessionKey, 30, 98, 100),
+    );
+
+    expect(stale.changed).toBe(false);
+    expect(stale.ignoredReason).toBe("out_of_order");
+    expect(stale.state?.snapshots).toHaveLength(1);
+    expect(state.putCount).toBe(1);
+  });
+
   it("calculates recent, baseline, slope, and bounded decay metrics", () => {
     const eventScores = [80, 78, 75, 72, 70, 60, 55, 50];
     const metrics = calculateResilienceMetrics({
-      version: 1,
+      version: 2,
       market: "xyz:SP500",
       sessionKey: "2026-08-04",
       snapshots: [],
@@ -122,18 +225,19 @@ describe("resilience decay state", () => {
     expect(metrics.decayDelta).toBe(-20);
     expect(metrics.recentEventScoreSlope).toBe(-5);
     expect(metrics.decayScore).toBe(50);
+    expect(metrics.unscoredShockCount).toBe(0);
   });
 
   it("does not classify until three recent and five baseline shocks are scored", () => {
     const metrics = calculateResilienceMetrics({
-      version: 1,
+      version: 2,
       market: "xyz:SP500",
       sessionKey: "2026-08-04",
       snapshots: [],
       activeShock: null,
       completedShocks: [
-        completedEvent("event-1", 100, 90, 100, null, 100),
-        completedEvent("event-2", 100, 90, 100, 100, null),
+        completedEvent("event-1", 100, 90, 100, 100, 100),
+        completedEvent("event-2", 100, 90, 100, 100, 100),
       ],
     });
 
@@ -141,6 +245,103 @@ describe("resilience decay state", () => {
     expect(metrics.recentResilience).toBeNull();
     expect(metrics.baselineResilience).toBeNull();
     expect(metrics.decayDelta).toBeNull();
+    expect(metrics.scoredShockCount).toBe(2);
+    expect(metrics.unscoredShockCount).toBe(0);
+  });
+
+  it.each([
+    { baseline: 70, recent: 54.99, status: "FRAGILE" },
+    { baseline: 70, recent: 55, status: "FADING" },
+    { baseline: 69.99, recent: 55, status: "RESILIENT" },
+  ] as const)(
+    "classifies the absolute and decay boundaries as $status",
+    ({ baseline, recent, status }) => {
+      const metrics = calculateResilienceMetrics({
+        version: 2,
+        market: "xyz:SP500",
+        sessionKey: "2026-08-04",
+        snapshots: [],
+        activeShock: null,
+        completedShocks: [
+          ...Array.from({ length: 5 }, (_value, index) =>
+            eventWithScore(`baseline-${index}`, baseline, index),
+          ),
+          ...Array.from({ length: 3 }, (_value, index) =>
+            eventWithScore(`recent-${index}`, recent, index + 5),
+          ),
+        ],
+      });
+
+      expect(metrics.status).toBe(status);
+    },
+  );
+
+  it("migrates version-one events without treating old troughs as valid checkpoint data", async () => {
+    const sessionKey = "2026-08-04";
+    const priceSnapshot = snapshot(sessionKey, 60, 100, 100);
+    const legacyEvent = completedEvent(
+      "legacy",
+      100,
+      90,
+      95,
+      96,
+      97,
+    ) as Partial<ResilienceShockEvent>;
+    delete legacyEvent.oneHourTroughPrice;
+    delete legacyEvent.twoHourTroughPrice;
+    delete legacyEvent.closeTroughPrice;
+    const state = countingMemoryKv({
+      "resilience-decay:xyz:SP500": JSON.stringify({
+        version: 1,
+        market: "xyz:SP500",
+        sessionKey,
+        snapshots: [priceSnapshot],
+        activeShock: null,
+        completedShocks: [legacyEvent],
+      }),
+    });
+
+    const migrated = await record(state, priceSnapshot);
+    const metrics = calculateResilienceMetrics(
+      migrated.state as ResilienceDecayState,
+    );
+
+    expect(migrated.changed).toBe(true);
+    expect(migrated.ignoredReason).toBe("duplicate");
+    expect(migrated.state?.version).toBe(2);
+    expect(migrated.state?.completedShocks[0]).toMatchObject({
+      oneHourTroughPrice: null,
+      twoHourTroughPrice: null,
+      closeTroughPrice: null,
+    });
+    expect(metrics.scoredShockCount).toBe(0);
+    expect(metrics.unscoredShockCount).toBe(1);
+  });
+
+  it("rebuilds malformed persisted state from the next valid snapshot", async () => {
+    const state = countingMemoryKv({
+      "resilience-decay:xyz:SP500": JSON.stringify({
+        version: 2,
+        market: "xyz:SP500",
+        sessionKey: "2026-08-04",
+        snapshots: [{ price: "not-a-number" }],
+        activeShock: null,
+        completedShocks: [],
+      }),
+    });
+
+    const rebuilt = await record(
+      state,
+      snapshot("2026-08-04", 30, 99, 100),
+    );
+
+    expect(rebuilt.changed).toBe(true);
+    expect(rebuilt.recordedSnapshotCount).toBe(1);
+    expect(rebuilt.state).toMatchObject({
+      version: 2,
+      sessionKey: "2026-08-04",
+      snapshots: [{ price: 99 }],
+    });
   });
 });
 
@@ -186,11 +387,33 @@ function completedEvent(
     troughPrice,
     troughAt: Date.parse("2026-08-04T14:30:00.000Z"),
     oneHourPrice,
+    oneHourTroughPrice: oneHourPrice === null ? null : troughPrice,
     twoHourPrice,
+    twoHourTroughPrice: twoHourPrice === null ? null : troughPrice,
     closePrice,
+    closeTroughPrice: closePrice === null ? null : troughPrice,
     recoveredAt: Date.parse("2026-08-04T15:00:00.000Z"),
     completedAt: Date.parse("2026-08-04T16:00:00.000Z"),
     completionReason: "recovered",
+  };
+}
+
+function eventWithScore(
+  id: string,
+  score: number,
+  order: number,
+): ResilienceShockEvent {
+  return {
+    ...completedEvent(
+      id,
+      100,
+      90,
+      90 + score / 10,
+      90 + score / 10,
+      90 + score / 10,
+    ),
+    startedAt:
+      Date.parse("2026-08-04T14:00:00.000Z") + order * 60_000,
   };
 }
 
@@ -202,11 +425,13 @@ async function readState(state: KVNamespace): Promise<ResilienceDecayState> {
   return JSON.parse(rawState) as ResilienceDecayState;
 }
 
-function countingMemoryKv(): KVNamespace & {
+function countingMemoryKv(
+  initial: Record<string, string> = {},
+): KVNamespace & {
   getCount: number;
   putCount: number;
 } {
-  const values = new Map<string, string>();
+  const values = new Map<string, string>(Object.entries(initial));
   const counters = {
     getCount: 0,
     putCount: 0,
