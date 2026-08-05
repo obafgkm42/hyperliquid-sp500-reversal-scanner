@@ -1,4 +1,4 @@
-"""Python regression tests for the frozen fragility event-study contract."""
+"""Regression tests for the frozen fragility event-study contract."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Regression tests for the frozen Python signal engine."""
+"""Regression tests for the Python research signal engine."""
 
 from __future__ import annotations
 

@@ -28,5 +28,5 @@ build-backend = "hatchling.build"
 packages = ["python/reversal_scanner_backtest"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests/python"]
+testpaths = ["python/tests"]
 pythonpath = ["python"]

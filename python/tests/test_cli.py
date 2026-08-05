@@ -1,4 +1,4 @@
-"""End-to-end smoke tests for the two public Python command contracts."""
+"""End-to-end smoke tests for the Python research command contracts."""
 
 from __future__ import annotations
 

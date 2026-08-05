@@ -1,4 +1,4 @@
-"""Cross-language contract tests for frozen research parameters."""
+"""Cross-language contract tests for the Python research parameters."""
 
 from __future__ import annotations
 

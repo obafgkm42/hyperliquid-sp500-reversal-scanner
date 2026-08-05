@@ -1,4 +1,4 @@
-"""Python statistical and calendar regression tests for reversal events."""
+"""Statistical and calendar regression tests for reversal events."""
 
 from __future__ import annotations
 
