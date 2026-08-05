@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Sequence
 from dataclasses import asdict
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -48,10 +49,10 @@ from reversal_scanner_backtest.walk_forward import (
 BACKTEST_SCHEMA_VERSION = 3
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     """Run the frozen-v1 reversal event study from candle JSON."""
 
-    args = parse_args()
+    args = parse_args(argv)
     set_backtest_session_time_zone(args.session_timezone)
     loaded_candles = load_candles(
         args.input,
@@ -363,7 +364,7 @@ def is_rth_candle(candle: Candle, time_zone: ZoneInfo) -> bool:
     return 9 * 60 + 30 <= minute_of_day < 16 * 60
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse command-line options."""
 
     parser = argparse.ArgumentParser(description="Run Python frozen-v1 reversal event study.")
@@ -376,7 +377,7 @@ def parse_args() -> argparse.Namespace:
         "--bootstrap-runs",
         type=int,
         default=2000,
-        help="Session-cluster bootstrap runs for 95% confidence intervals.",
+        help="Session-cluster bootstrap runs for 95%% confidence intervals.",
     )
     parser.add_argument(
         "--bootstrap-seed",
@@ -477,7 +478,7 @@ def parse_args() -> argparse.Namespace:
             "wall clock in --source-timezone for legacy naive-local files."
         ),
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def format_rate(value: float | None) -> str:

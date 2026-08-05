@@ -274,18 +274,8 @@ uv sync --dev
 uv run pytest
 ```
 
-The core environment does not install vectorbt. The optional portfolio adapter
-uses vectorbt 1.x, whose Apache-2.0 base license includes the Commons Clause
-commercial restriction. Review [Third-party notices](THIRD_PARTY_NOTICES.md)
-before installing it:
-
-```bash
-uv sync --dev --extra portfolio
-uv run pytest tests_py/test_vectorbt_adapter.py
-```
-
-The optional adapter has a narrower dependency-compatibility range than the core
-environment, so it is validated separately in Linux CI.
+Worker regression tests live in `tests/`. Python research, contract, and CLI
+tests live in `tests_py/` and are organized by domain.
 
 Run the local Worker:
 

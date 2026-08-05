@@ -5,7 +5,6 @@ source_code:
   runtime_config: src/config.ts
   backtest_signal_port: python/reversal_scanner_backtest/signal_engine.py
   backtest_runner: python/reversal_scanner_backtest/cli.py
-  portfolio_adapter: python/reversal_scanner_backtest/portfolio_vectorbt.py
 
 signal_inputs:
   market: "xyz:SP500"

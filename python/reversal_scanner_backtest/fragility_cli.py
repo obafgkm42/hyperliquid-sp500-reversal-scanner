@@ -7,7 +7,7 @@ import hashlib
 import json
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -62,10 +62,10 @@ class StreamingReplayResult:
     last_timestamp: int
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     """Run the price-only fragility replay and write reproducible artifacts."""
 
-    args = parse_args()
+    args = parse_args(argv)
     settings = FragilityReplaySettings(
         brief_interval_minutes=args.brief_interval_minutes,
         session_time_zone=args.session_timezone,
@@ -594,7 +594,7 @@ def print_headline(payload: dict[str, object], output_dir: Path) -> None:
     print(f"Full JSON: {output_dir / 'fragility_backtest.json'}")
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse the stable schema-v1 command-line contract."""
 
     parser = argparse.ArgumentParser(
@@ -645,7 +645,7 @@ def parse_args() -> argparse.Namespace:
         default="utc-epoch",
     )
     parser.add_argument("--compare-to", type=Path, default=None)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _iso_timestamp(timestamp: int) -> str:

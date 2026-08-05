@@ -11,11 +11,6 @@ dependencies = [
     "scipy>=1.15.3",
 ]
 
-[project.optional-dependencies]
-portfolio = [
-    "vectorbt>=1.0.0",
-]
-
 [project.scripts]
 reversal-scanner-backtest = "reversal_scanner_backtest.cli:main"
 fragility-backtest = "reversal_scanner_backtest.fragility_cli:main"

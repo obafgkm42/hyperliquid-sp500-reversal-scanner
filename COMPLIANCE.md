@@ -76,11 +76,9 @@ vendor. Do not automate access-control or browser-verification challenges.
 ## Software dependencies
 
 The project's MIT License covers original repository code and documentation,
-not its dependencies. In particular, vectorbt 1.x is optional and distributed
-under Apache 2.0 with the Commons Clause. That condition restricts selling a
-product or service whose value derives substantially from vectorbt. It is not
-installed by the default research environment. Review the exact installed
-license before enabling the `portfolio` extra, especially for commercial use.
+not its dependencies. Review the exact licenses installed with the Node.js and
+Python dependency trees before redistributing binaries or offering a commercial
+service.
 
 See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for direct dependencies.
 
