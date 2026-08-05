@@ -101,23 +101,87 @@ Run the executable checks with:
 ```bash
 npm test
 npm run typecheck
+uv run pytest
 ```
 
-Before this diagnostic is allowed to change any alert or trading behavior, a
-separate historical replay should preserve the exact half-hour observation
-grid, use only information available at each checkpoint, report the share and
-time-of-day distribution of unscored shocks, use session-cluster uncertainty,
-and test parameter stability out of sample.
+## Historical replay
+
+The schema-v1 Python event study mirrors the live half-hour observation grid,
+freezes checkpoint-visible troughs, and uses future candles only after the
+session-close classification has been recorded. Run it on lawfully obtained
+five-minute candles with:
+
+```bash
+uv run resilience-decay-backtest \
+  --input path/to/SPX_full_5min_CT.json \
+  --output-dir backtest/resilience-decay-v1 \
+  --source-label selected-local-SPX-5m-cache \
+  --source-timezone America/Chicago \
+  --source-timestamp-mode naive-local \
+  --session-timezone America/New_York \
+  --bootstrap-runs 1000 \
+  --bootstrap-block-sessions 5
+```
+
+For a quick implementation check, use `--bootstrap-runs 0` together with
+`--skip-sensitivity`. That mode is not the canonical statistical report.
+Generated output is ignored by Git and includes the complete input hash,
+methodology fingerprint, event and session CSV files, fixed chronological
+60/20/20 slices, one-at-a-time sensitivity rows, and circular moving-block
+intervals over consecutive session dates.
+
+The first 2008–2026 audit produced 4,653 session observations and 3,266 shocks,
+of which 2,393 (73.27%) were fully scored. The current live thresholds produced
+only one `FADING` session and none in the final chronological slice. Predictive
+differences and their intervals are therefore suppressed: the current
+classification is computable but not statistically identifiable.
+
+The sensitivity audit also made the structural limitations measurable:
+
+- five-minute path sampling found 6,771 shocks versus 3,266 on the live
+  half-hour grid, so half-hour closes materially undercount fast paths;
+- requiring a possible two-hour checkpoint reduced the cohort to 2,395 shocks
+  and raised complete-case coverage from 73.27% to 99.92%;
+- removing the absolute recent-score floor produced enough `FADING` sessions
+  to calculate separation, but that variant was inspected on the existing
+  holdout, changed direction between chronological slices, and is not a clean
+  holdout-selected replacement; and
+- session-weighted scores, one classification row per session, and session-
+  block resampling prevent same-day shocks from being treated as independent
+  evidence.
+
+## Calibration plan
+
+No live threshold changes follow directly from the first audit. A version-two
+candidate should proceed in this order:
+
+1. shadow a five-minute event path beside the unchanged live half-hour state;
+2. reject event starts that cannot reach the two-hour checkpoint, while
+   reporting excluded late-session shocks separately;
+3. define candidate score and decay thresholds using development periods only,
+   with a minimum of 30 independent sessions in every compared status cohort;
+4. evaluate frozen candidates in rolling-origin, non-overlapping test windows
+   using session-level outcomes and session-block intervals; and
+5. require prospective data not used in this audit before a candidate can
+   affect alerts, mentions, colors, or trade decisions.
+
+The existing 60/20/20 slices are an audit of the frozen heuristic, not a valid
+optimizer. Because all three slices and the sensitivity grid have now been
+inspected, the final slice must not be relabeled as an untouched holdout for a
+newly selected rule.
 
 ## Known limitations
 
-- The `0.6%`, weight, `55`, and `-15` parameters are transparent heuristics,
-  not statistically calibrated thresholds.
+- The `0.6%`, weight, `55`, and `-15` parameters are transparent heuristics;
+  the historical audit shows that their `FADING` cohort is too sparse to
+  evaluate.
 - Half-hour closes can miss faster intrainterval lows and recoveries.
-- Multiple shocks from one session are dependent observations.
+- Multiple shocks from one session remain dependent event inputs even though
+  reported prediction rows and uncertainty use session-level units.
 - Requiring a two-hour checkpoint selects against late-session shocks.
-- Eight events is enough to compute the diagnostic, not enough to establish a
-  stable predictive relationship.
+- Eight events remains only a live calculation minimum. Research differences
+  are suppressed until both compared cohorts contain at least 30 independent
+  sessions.
 - `xyz:SP500` is a venue-specific perpetual proxy, not official cash SPX.
 
 These limitations are why resilience decay remains presentation-only.

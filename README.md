@@ -339,6 +339,26 @@ thresholds, VWAP mode, forward-path labels, moving-block intervals, annual
 slices, and rolling stability. See
 [Market fragility backtest methodology](docs/fragility-backtest-methodology.md).
 
+Run the separate resilience-decay event study on the same class of local
+five-minute candles:
+
+```bash
+uv run resilience-decay-backtest \
+  --input path/to/SPX_full_5min_CT.json \
+  --output-dir backtest/resilience-decay-v1 \
+  --source-label selected-local-SPX-5m-cache \
+  --source-timezone America/Chicago \
+  --source-timestamp-mode naive-local \
+  --session-timezone America/New_York
+```
+
+It reproduces the live half-hour event state without lookahead, reports
+unscored late-session shocks, uses one session-close classification row per
+date, applies session-block intervals, and runs path/threshold/weight
+sensitivity variants. The first full audit found that the frozen `55/-15`
+`FADING` rule is too sparse to evaluate, so it remains presentation-only. See
+[Resilience decay methodology](docs/resilience-decay-methodology.md).
+
 ## Research contract
 
 The schema-v3 runner:
@@ -357,6 +377,11 @@ The schema-v3 runner:
 The periodic fragility state remains a transparent classifier diagnostic. Its
 schema-v1 event study is methodologically separate from strategy P&L and does
 not by itself authorize short or option trades.
+
+The resilience-decay schema-v1 study is also diagnostic rather than a strategy
+backtest. Parameter variants are reported for falsification and calibration
+planning; they are not automatically selected or promoted from the inspected
+historical sample.
 
 Bring your own lawfully obtained candle data. A Hugging Face helper is included
 for downloading a specifically selected dataset file, but every dataset has

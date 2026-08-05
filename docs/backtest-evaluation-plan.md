@@ -185,3 +185,14 @@ market state into strategy or option PnL.
 
 See [Market fragility backtest methodology](fragility-backtest-methodology.md)
 for the complete versioning, VWAP-source, outcome, and comparison contract.
+
+## Separate Resilience-Decay Study
+
+The event-level resilience diagnostic has its own schema-v1 replay. It mirrors
+the live half-hour grid without lookahead, reports complete-case coverage,
+collapses prediction rows to one per session, uses session-block intervals,
+and audits fixed path and threshold variants. Its current `FADING` cohort is
+too sparse to evaluate, so the study cannot authorize a live behavior change.
+
+See [Resilience decay methodology](resilience-decay-methodology.md) for the
+replay command, first full-sample findings, and calibration plan.
