@@ -6,7 +6,7 @@ import hashlib
 import math
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -91,20 +91,22 @@ def validate_candle_stream(
     zero_volume_rows = 0
     irregular_session_intervals = 0
     weekend_rows = 0
-    session_dates: set[str] = set()
-    first_start_minute_by_date: dict[str, int] = {}
+    session_dates: set[date] = set()
+    first_start_minute_by_date: dict[date, int] = {}
     candle_count = 0
 
     previous: Candle | None = None
+    previous_end_date: date | None = None
     for candle in candles:
         candle_count += 1
         local_timestamp = datetime.fromtimestamp(candle.end_time / 1000, tz=time_zone)
-        session_dates.add(local_timestamp.strftime("%Y-%m-%d"))
+        end_date = local_timestamp.date()
+        session_dates.add(end_date)
         start_timestamp = datetime.fromtimestamp(
             candle.start_time / 1000,
             tz=time_zone,
         )
-        date_value = start_timestamp.strftime("%Y-%m-%d")
+        date_value = start_timestamp.date()
         first_start_minute_by_date.setdefault(
             date_value,
             start_timestamp.hour * 60 + start_timestamp.minute,
@@ -118,8 +120,7 @@ def validate_candle_stream(
             if candle.end_time <= previous.end_time:
                 out_of_order_rows += 1
             elif (
-                _date_key(previous.end_time, time_zone)
-                == _date_key(candle.end_time, time_zone)
+                previous_end_date == end_date
                 and candle.start_time - previous.start_time != expected_interval_ms
             ):
                 irregular_session_intervals += 1
@@ -132,6 +133,7 @@ def validate_candle_stream(
         if candle.volume == 0:
             zero_volume_rows += 1
         previous = candle
+        previous_end_date = end_date
 
     zero_volume_rate = (
         None if candle_count == 0 else zero_volume_rows / candle_count
@@ -217,7 +219,3 @@ def _valid_ohlc(candle: Candle) -> bool:
         and candle.low <= candle.open <= candle.high
         and candle.low <= candle.close <= candle.high
     )
-
-
-def _date_key(timestamp: int, time_zone: ZoneInfo) -> str:
-    return datetime.fromtimestamp(timestamp / 1000, tz=time_zone).strftime("%Y-%m-%d")

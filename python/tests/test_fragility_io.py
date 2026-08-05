@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+import reversal_scanner_backtest.fragility_cli as fragility_cli
 from reversal_scanner_backtest.fragility_cli import (
     apply_proxy_volume,
     build_streaming_replay,
@@ -49,6 +52,27 @@ def test_streaming_loader_matches_repo_candle_shape(tmp_path: Path) -> None:
         json.dumps([item.to_dict() for item in expected]),
         encoding="utf-8",
     )
+
+    loaded = load_candles_streaming(source)
+
+    assert loaded == expected
+
+
+def test_streaming_loader_preserves_rows_across_small_chunks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "candles.json"
+    expected = session_candles([100 + index / 10 for index in range(20)])
+    source.write_text(
+        json.dumps(
+            [item.to_dict() for item in expected],
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(fragility_cli, "JSON_READ_CHUNK_SIZE", 97)
+    monkeypatch.setattr(fragility_cli, "JSON_REFILL_THRESHOLD", 23)
 
     loaded = load_candles_streaming(source)
 

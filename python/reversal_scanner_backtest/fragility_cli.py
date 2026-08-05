@@ -49,6 +49,8 @@ from reversal_scanner_backtest.validation import (
 
 FRAGILITY_BACKTEST_SCHEMA_VERSION = 1
 CLASSIFIER_VERSION = "fragility-price-only-v1"
+JSON_READ_CHUNK_SIZE = 1024 * 1024
+JSON_REFILL_THRESHOLD = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -370,36 +372,65 @@ def iter_json_array(path: Path) -> Iterator[dict[str, object]]:
     decoder = json.JSONDecoder()
     with path.open("r", encoding="utf-8") as source:
         buffer = ""
+        cursor = 0
         array_started = False
+        reached_eof = False
         while True:
-            if len(buffer) < 65_536:
-                buffer += source.read(1024 * 1024)
-            buffer = buffer.lstrip()
+            if (
+                not reached_eof
+                and len(buffer) - cursor < JSON_REFILL_THRESHOLD
+            ):
+                # Retain an index into the current chunk instead of slicing the
+                # remaining buffer after every row. On large JSON arrays those
+                # repeated slices otherwise dominate the complete replay.
+                buffer = buffer[cursor:]
+                cursor = 0
+                chunk = source.read(JSON_READ_CHUNK_SIZE)
+                if chunk:
+                    buffer += chunk
+                else:
+                    reached_eof = True
+
+            while cursor < len(buffer) and buffer[cursor].isspace():
+                cursor += 1
             if not array_started:
-                if not buffer:
+                if cursor >= len(buffer):
+                    if not reached_eof:
+                        continue
                     raise ValueError("input JSON is empty")
-                if not buffer.startswith("["):
+                if buffer[cursor] != "[":
                     raise ValueError("input must be a JSON array")
-                buffer = buffer[1:]
+                cursor += 1
                 array_started = True
                 continue
-            buffer = buffer.lstrip()
-            if buffer.startswith(","):
-                buffer = buffer[1:].lstrip()
-            if buffer.startswith("]"):
+
+            if cursor < len(buffer) and buffer[cursor] == ",":
+                cursor += 1
+                while cursor < len(buffer) and buffer[cursor].isspace():
+                    cursor += 1
+            if cursor < len(buffer) and buffer[cursor] == "]":
                 return
-            try:
-                value, end_index = decoder.raw_decode(buffer)
-            except json.JSONDecodeError:
-                chunk = source.read(1024 * 1024)
-                if not chunk:
+            if cursor >= len(buffer):
+                if reached_eof:
                     raise ValueError("input JSON array is truncated")
+                continue
+            try:
+                value, end_index = decoder.raw_decode(buffer, cursor)
+            except json.JSONDecodeError:
+                if reached_eof:
+                    raise ValueError("input JSON array is truncated") from None
+                buffer = buffer[cursor:]
+                cursor = 0
+                chunk = source.read(JSON_READ_CHUNK_SIZE)
+                if not chunk:
+                    reached_eof = True
+                    continue
                 buffer += chunk
                 continue
             if not isinstance(value, dict):
                 raise ValueError("every candle row must be a JSON object")
             yield value
-            buffer = buffer[end_index:]
+            cursor = end_index
 
 
 def determine_vwap_mode(
