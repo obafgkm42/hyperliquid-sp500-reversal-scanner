@@ -19,7 +19,7 @@ from reversal_scanner_backtest.fragility_cli import (
 from factories import session_candles
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_reversal_cli_help_renders(capsys: pytest.CaptureFixture[str]) -> None:

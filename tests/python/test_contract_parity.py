@@ -10,7 +10,7 @@ from reversal_scanner_backtest import signal_engine
 from reversal_scanner_backtest.fragility_study import frozen_fragility_thresholds
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_frozen_python_parameters_match_typescript_and_runtime_defaults() -> None:

@@ -1,4 +1,4 @@
-"""Fragility input, proxy-volume, and streaming regression tests."""
+"""Fragility input, proxy-volume, and streaming Python regression tests."""
 
 from __future__ import annotations
 

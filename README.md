@@ -274,8 +274,8 @@ uv sync --dev
 uv run pytest
 ```
 
-Worker regression tests live in `tests/`. Python research, contract, and CLI
-tests live in `tests_py/` and are organized by domain.
+All tests live under `tests/`: Worker regression tests are at its root, shared
+fixtures are in `tests/fixtures/`, and Python tests are in `tests/python/`.
 
 Run the local Worker:
 

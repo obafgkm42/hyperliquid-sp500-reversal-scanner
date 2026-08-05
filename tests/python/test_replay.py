@@ -1,4 +1,4 @@
-"""Production-cadence replay regression tests."""
+"""Production-cadence replay regression tests for Python research."""
 
 from __future__ import annotations
 

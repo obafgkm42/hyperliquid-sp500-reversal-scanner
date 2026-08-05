@@ -1,4 +1,4 @@
-"""Execution and trade-policy regression tests."""
+"""Execution and trade-policy regression tests for Python research."""
 
 from __future__ import annotations
 

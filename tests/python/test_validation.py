@@ -1,4 +1,4 @@
-"""Candle validation and timestamp normalization regression tests."""
+"""Python candle validation and timestamp normalization regression tests."""
 
 from __future__ import annotations
 

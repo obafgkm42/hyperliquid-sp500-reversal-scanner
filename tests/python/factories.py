@@ -1,4 +1,4 @@
-"""Deterministic candle and signal builders shared by Python tests."""
+"""Deterministic candle and signal builders shared by the Python tests."""
 
 from __future__ import annotations
 
