@@ -8,6 +8,7 @@ import tomllib
 
 from reversal_scanner_backtest import signal_engine
 from reversal_scanner_backtest.fragility_study import frozen_fragility_thresholds
+from reversal_scanner_backtest.resilience_decay_study import ResilienceParameters
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -83,6 +84,30 @@ def test_frozen_fragility_parameters_match_typescript() -> None:
         "MINIMUM_AVAILABLE_INDICATORS": thresholds[
             "minimumAvailableIndicators"
         ],
+    }
+    for name, python_value in shared.items():
+        match = re.search(rf"const {name} = (-?[0-9.]+);", type_script)
+        assert match is not None
+        assert float(match.group(1)) == float(python_value)
+
+
+def test_resilience_decay_parameters_match_typescript() -> None:
+    type_script = (PROJECT_ROOT / "src/resilience-decay.ts").read_text(
+        encoding="utf-8"
+    )
+    parameters = ResilienceParameters()
+    shared = {
+        "SHOCK_DROP_THRESHOLD": parameters.shock_drop_threshold,
+        "MAX_COMPLETED_SHOCKS": parameters.maximum_completed_shocks,
+        "FADING_RECENT_RESILIENCE_MINIMUM": (
+            parameters.fading_recent_minimum
+        ),
+        "FADING_DECAY_DELTA_THRESHOLD": (
+            parameters.fading_decay_delta_threshold
+        ),
+        "ONE_HOUR_SCORE_WEIGHT": parameters.one_hour_weight,
+        "TWO_HOUR_SCORE_WEIGHT": parameters.two_hour_weight,
+        "CLOSE_SCORE_WEIGHT": parameters.close_weight,
     }
     for name, python_value in shared.items():
         match = re.search(rf"const {name} = (-?[0-9.]+);", type_script)

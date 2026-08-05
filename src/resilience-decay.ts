@@ -14,6 +14,7 @@ const CHECKPOINT_TWO_HOURS_MS = 2 * 60 * 60 * 1_000;
 const MAX_COMPLETED_SHOCKS = 12;
 const FADING_RECENT_RESILIENCE_MINIMUM = 55;
 const FADING_DECAY_DELTA_THRESHOLD = -15;
+const METRIC_COMPARISON_TOLERANCE = 1e-9;
 const ONE_HOUR_SCORE_WEIGHT = 0.35;
 const TWO_HOUR_SCORE_WEIGHT = 0.45;
 const CLOSE_SCORE_WEIGHT = 0.2;
@@ -531,10 +532,16 @@ function classifyResilience(
   ) {
     return "INSUFFICIENT_DATA";
   }
-  if (recentResilience < FADING_RECENT_RESILIENCE_MINIMUM) {
+  if (
+    recentResilience + METRIC_COMPARISON_TOLERANCE <
+    FADING_RECENT_RESILIENCE_MINIMUM
+  ) {
     return "FRAGILE";
   }
-  if (decayDelta <= FADING_DECAY_DELTA_THRESHOLD) {
+  if (
+    decayDelta <=
+    FADING_DECAY_DELTA_THRESHOLD + METRIC_COMPARISON_TOLERANCE
+  ) {
     return "FADING";
   }
   return "RESILIENT";

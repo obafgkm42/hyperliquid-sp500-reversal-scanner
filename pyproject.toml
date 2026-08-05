@@ -14,6 +14,7 @@ dependencies = [
 [project.scripts]
 reversal-scanner-backtest = "reversal_scanner_backtest.cli:main"
 fragility-backtest = "reversal_scanner_backtest.fragility_cli:main"
+resilience-decay-backtest = "reversal_scanner_backtest.resilience_decay_cli:main"
 
 [dependency-groups]
 dev = [
