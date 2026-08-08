@@ -8,6 +8,7 @@ import {
   sendVersionNotice,
 } from "../src/discord";
 import type {
+  MarketActivitySnapshot,
   MarketFragilitySnapshot,
   ReversalLocation,
   ResilienceDecayMetrics,
@@ -15,6 +16,48 @@ import type {
 } from "../src/types";
 
 describe("sendMarketBrief", () => {
+  it("adds RVOL only to the detailed card without changing compact mentions", async () => {
+    const requests: RequestInit[] = [];
+    const fetcher = async (_url: string | URL | Request, init?: RequestInit) => {
+      requests.push(init ?? {});
+      return new Response(null, { status: 204 });
+    };
+    const result: ScanResult = {
+      market: "xyz:SP500",
+      candleCount: 24,
+      sessionHigh: 6100,
+      sessionLow: 6075,
+      latestPrice: 6090,
+      status: "no fresh lookback extreme rejection passed watch or alert thresholds",
+      watch: null,
+      signal: null,
+    };
+
+    await sendMarketBrief(
+      "https://discord.com/api/webhooks/example/token",
+      result,
+      new Date("2026-06-23T15:30:00.000Z"),
+      fetcher as typeof fetch,
+      undefined,
+      "zh",
+      undefined,
+      undefined,
+      activitySnapshot(),
+    );
+
+    const payload = JSON.parse(String(requests[0]?.body));
+    expect(payload.content).not.toContain("ACTIVE");
+    expect(payload.allowed_mentions).toEqual({ parse: [] });
+    expect(payload.embeds[0].fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "市場活躍度",
+          value: expect.stringContaining("累積 RVOL 1.31x · P82/46"),
+        }),
+      ]),
+    );
+  });
+
   it("sends a Discord heartbeat when no signal is present", async () => {
     const requests: RequestInit[] = [];
     const fetcher = async (_url: string | URL | Request, init?: RequestInit) => {
@@ -570,10 +613,12 @@ describe("publicScanResult", () => {
       result,
       "zh",
       fragilitySnapshot(),
+      activitySnapshot(),
     ) as {
       status: string;
       watch: { direction: string; policy: { reasons: string[] } };
       marketFragility: MarketFragilitySnapshot;
+      marketActivity: MarketActivitySnapshot;
     };
 
     expect(localized.status).toContain("WATCH 級別");
@@ -582,6 +627,7 @@ describe("publicScanResult", () => {
       "已通過現代反轉區市場狀態門檻",
     );
     expect(localized.marketFragility.level).toBe("breaking");
+    expect(localized.marketActivity.level).toBe("ACTIVE");
   });
 });
 
@@ -609,6 +655,25 @@ function opportunity(level: "watch" | "alert"): ReversalLocation {
     },
     reasons: ["fresh lookback low rejected"],
     timestamp: Date.parse("2026-06-24T00:30:00Z"),
+  };
+}
+
+function activitySnapshot(): MarketActivitySnapshot {
+  return {
+    market: "xyz:SP500",
+    sessionKey: "2026-06-23",
+    level: "ACTIVE",
+    sessionRvol: 1.31,
+    barRvol: 1.7,
+    barActivity: "elevated",
+    percentile: 82,
+    percentileBand: "high",
+    sampleSessions: 46,
+    confidence: "confirmed",
+    dataQuality: "good",
+    currentSlotIndex: 7,
+    asOf: Date.parse("2026-06-23T15:30:00.000Z"),
+    source: "hyperliquid",
   };
 }
 

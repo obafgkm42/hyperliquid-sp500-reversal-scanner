@@ -8,10 +8,12 @@ import {
   marketFragilityColor,
 } from "./market-fragility-format";
 import { marketFragilityThresholds } from "./market-fragility";
+import { formatMarketActivitySummary } from "./market-activity-format";
 import type {
   Language,
   MarketFragilityIndicatorId,
   MarketFragilitySnapshot,
+  MarketActivitySnapshot,
   ReversalLocation,
   ScanResult,
 } from "./types";
@@ -50,6 +52,7 @@ export interface DiscordMessageData {
 export interface DiscordScannerStatus {
   scan: ScanResult;
   fragility: MarketFragilitySnapshot | null;
+  activity?: MarketActivitySnapshot | null;
 }
 
 /**
@@ -113,6 +116,17 @@ export function buildDiscordStatusMessage(
                   name: english ? "Data coverage" : "資料覆蓋",
                   value: `${fragility.availableIndicatorCount}/${fragility.totalIndicatorCount} · ${formatMarketFragilityDataQuality(fragility, language)}`,
                   inline: true,
+                },
+              ]),
+          ...(status.activity === undefined || status.activity === null
+            ? []
+            : [
+                {
+                  name: english ? "Market activity" : "市場活躍度",
+                  value: formatMarketActivitySummary(
+                    status.activity,
+                    language,
+                  ),
                 },
               ]),
           {

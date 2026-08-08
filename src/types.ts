@@ -8,6 +8,7 @@ export interface Env {
   REGULAR_SCAN_MINUTES?: string;
   FINAL_HOUR_SCAN_MINUTES?: string;
   BRIEF_INTERVAL_MINUTES?: string;
+  MARKET_ACTIVITY_MODE?: string;
   MINIMUM_WATCH_PRICE_R?: string;
   MINIMUM_WATCH_CONFIDENCE_SCORE?: string;
   MINIMUM_PRICE_R?: string;
@@ -18,6 +19,7 @@ export interface Env {
 }
 
 export type Language = "en" | "zh";
+export type MarketActivityMode = "off" | "shadow" | "display";
 
 export interface ScannerConfig {
   discordWebhookUrl: string;
@@ -26,6 +28,7 @@ export interface ScannerConfig {
   regularScanMinutes: number;
   finalHourScanMinutes: number;
   briefIntervalMinutes: number;
+  marketActivityMode: MarketActivityMode;
   minimumWatchPriceR: number;
   minimumWatchConfidenceScore: number;
   minimumPriceR: number;
@@ -163,6 +166,72 @@ export interface ScanResult {
   sessionLow: number | null;
   latestPrice: number | null;
   status: string;
+}
+
+export type MarketActivityLevel =
+  | "DEADWATER"
+  | "QUIET"
+  | "NORMAL"
+  | "ACTIVE"
+  | "SURGE"
+  | "FORMING"
+  | "UNKNOWN";
+
+export type MarketActivityDataQuality =
+  | "insufficient"
+  | "provisional"
+  | "limited"
+  | "good"
+  | "full";
+
+export type MarketActivityConfidence =
+  | "unavailable"
+  | "provisional"
+  | "borderline"
+  | "confirmed"
+  | "mixed";
+
+export type MarketActivityPercentileBand =
+  | "extreme_low"
+  | "low"
+  | "typical"
+  | "high"
+  | "extreme_high";
+
+export type MarketActivityBurstLevel =
+  | "ordinary"
+  | "elevated"
+  | "burst";
+
+/** Diagnostic-only RTH volume state. It does not change alert eligibility. */
+export interface MarketActivitySnapshot {
+  market: string;
+  sessionKey: string | null;
+  level: MarketActivityLevel;
+  sessionRvol: number | null;
+  barRvol: number | null;
+  barActivity: MarketActivityBurstLevel | null;
+  percentile: number | null;
+  percentileBand: MarketActivityPercentileBand | null;
+  sampleSessions: number;
+  confidence: MarketActivityConfidence;
+  dataQuality: MarketActivityDataQuality;
+  currentSlotIndex: number | null;
+  asOf: number;
+  source: "hyperliquid";
+}
+
+export interface MarketActivitySession {
+  sessionKey: string;
+  slotVolumes: number[];
+}
+
+export interface MarketActivityState {
+  version: 1;
+  market: string;
+  intervalMinutes: 15;
+  bootstrapAttemptedAt: number | null;
+  completedSessions: MarketActivitySession[];
 }
 
 export interface ResiliencePriceSnapshot {

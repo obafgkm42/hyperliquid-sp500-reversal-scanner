@@ -14,6 +14,11 @@ import {
   HyperliquidRateLimitError,
 } from "./hyperliquid";
 import {
+  isMarketActivityBootstrapTime,
+  isMarketActivityEvaluationTime,
+} from "./market-activity";
+import { evaluateMarketActivity } from "./market-activity-service";
+import {
   analyzeMarketFragility,
   FRAGILITY_CONTEXT_COINS,
 } from "./market-fragility";
@@ -46,6 +51,7 @@ import type {
   AnalysisThresholds,
   Candle,
   Env,
+  MarketActivitySnapshot,
   MarketFragilitySnapshot,
   ResiliencePriceSnapshot,
   ScanResult,
@@ -60,6 +66,7 @@ let lastVersionNoticeSentFor: string | null = null;
 interface ScanExecutionResult {
   scan: ScanResult;
   fragility: MarketFragilitySnapshot | null;
+  activity: MarketActivitySnapshot | null;
 }
 
 export default {
@@ -111,7 +118,7 @@ export default {
         allowedGuildId: env.DISCORD_GUILD_ID,
         language: config.language,
         getStatus: () =>
-          runScan(config, new Date(), false, false, null),
+          runScan(config, new Date(), false, false, null, false),
         waitUntil: (promise) => context.waitUntil(promise),
       });
     }
@@ -141,12 +148,14 @@ export default {
         false,
         false,
         null,
+        false,
       );
       return Response.json(
         publicScanResult(
           execution.scan,
           config.language,
           execution.fragility ?? undefined,
+          execution.activity ?? undefined,
         ),
       );
     } catch (error) {
@@ -162,6 +171,7 @@ async function runScan(
   notify: boolean,
   sendBrief: boolean,
   notificationWindowStart: Date | null,
+  scheduledExecution: boolean,
 ): Promise<ScanExecutionResult> {
   const candles = await fetchFiveMinuteCandles(
     config.hyperliquidCoin,
@@ -299,6 +309,12 @@ async function runScan(
       notificationOpportunity.signal,
     );
   }
+  const activity = await maybeEvaluateMarketActivity(
+    config,
+    candles,
+    now,
+    scheduledExecution,
+  );
   if (sendBrief && fragility === null) {
     // Optional cross-market work runs after time-sensitive signal delivery.
     fragility = await calculateMarketFragility(sessionCandles);
@@ -326,6 +342,9 @@ async function runScan(
       config.language,
       fragility ?? undefined,
       resilienceMetrics,
+      config.marketActivityMode === "display"
+        ? activity ?? undefined
+        : undefined,
     );
   }
   if (notify) {
@@ -338,7 +357,81 @@ async function runScan(
       );
     }
   }
-  return { scan: result, fragility };
+  return { scan: result, fragility, activity };
+}
+
+async function maybeEvaluateMarketActivity(
+  config: ScannerConfig,
+  candles: readonly Candle[],
+  timestamp: Date,
+  scheduledExecution: boolean,
+): Promise<MarketActivitySnapshot | null> {
+  if (
+    config.marketActivityMode === "off" ||
+    (scheduledExecution &&
+      !isMarketActivityEvaluationTime(timestamp) &&
+      !isMarketActivityBootstrapTime(timestamp))
+  ) {
+    return null;
+  }
+
+  try {
+    const evaluation = await evaluateMarketActivity(
+      config.scannerState,
+      config.hyperliquidCoin,
+      candles,
+      timestamp,
+      {
+        allowBootstrap: scheduledExecution,
+        persistState: scheduledExecution,
+      },
+    );
+    console.log(
+      JSON.stringify({
+        status: "market_activity",
+        mode: config.marketActivityMode,
+        market: config.hyperliquidCoin,
+        level: evaluation.snapshot.level,
+        sessionRvol: evaluation.snapshot.sessionRvol,
+        barRvol: evaluation.snapshot.barRvol,
+        percentile: evaluation.snapshot.percentile,
+        sampleSessions: evaluation.snapshot.sampleSessions,
+        confidence: evaluation.snapshot.confidence,
+        dataQuality: evaluation.snapshot.dataQuality,
+        asOf: new Date(evaluation.snapshot.asOf).toISOString(),
+        historySessionCount: evaluation.historySessionCount,
+        stateChanged: evaluation.stateChanged,
+        stateWritten: evaluation.stateWritten,
+        recoveredCorruptState: evaluation.recoveredCorruptState,
+        bootstrapAttempted: evaluation.bootstrapAttempted,
+        bootstrapLookbackDays: evaluation.bootstrapLookbackDays,
+        bootstrapSessionCount: evaluation.bootstrapSessionCount,
+        bootstrapError: evaluation.bootstrapError,
+        approximateCpuMs: evaluation.approximateCpuMs,
+      }),
+    );
+    if (evaluation.bootstrapError !== null) {
+      console.warn(
+        JSON.stringify({
+          status: "market_activity_bootstrap_degraded",
+          market: config.hyperliquidCoin,
+          reason: evaluation.bootstrapError,
+          effect: "RVOL history remains provisional; scanner signals continue",
+        }),
+      );
+    }
+    return evaluation.snapshot;
+  } catch (error) {
+    console.warn(
+      JSON.stringify({
+        status: "market_activity_degraded",
+        market: config.hyperliquidCoin,
+        reason: safeErrorName(error),
+        effect: "RVOL diagnostic omitted; scanner signals continue",
+      }),
+    );
+    return null;
+  }
 }
 
 async function maybeRecordResilienceSnapshot(
@@ -482,6 +575,7 @@ async function runScheduledScan(
       notify,
       sendBrief,
       notificationWindowStart,
+      true,
     );
     if (rateLimitIncidentActive) {
       await clearRateLimitIncident(

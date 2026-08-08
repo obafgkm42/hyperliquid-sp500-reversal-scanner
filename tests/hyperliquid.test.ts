@@ -1,10 +1,60 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  fetchFifteenMinuteCandles,
   fetchFiveMinuteCandles,
   fetchXyzMarketContexts,
   HyperliquidRateLimitError,
 } from "../src/hyperliquid";
+
+describe("fetchFifteenMinuteCandles", () => {
+  it("requests a bounded bootstrap window and excludes a forming candle", async () => {
+    const requests: RequestInit[] = [];
+    const now = new Date("2026-09-02T20:15:00.000Z");
+    const completedStart = now.getTime() - 30 * 60_000;
+    const formingStart = now.getTime();
+    const fetcher = async (
+      _input: string | URL | Request,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      requests.push(init ?? {});
+      return Response.json([
+        candlePayload(completedStart, 15),
+        candlePayload(formingStart, 15),
+      ]);
+    };
+
+    const candles = await fetchFifteenMinuteCandles(
+      "xyz:SP500",
+      now,
+      18,
+      fetcher as typeof fetch,
+    );
+    const body = JSON.parse(String(requests[0]?.body)) as {
+      req: {
+        interval: string;
+        startTime: number;
+        endTime: number;
+      };
+    };
+
+    expect(candles).toHaveLength(1);
+    expect(body.req.interval).toBe("15m");
+    expect(body.req.endTime - body.req.startTime).toBe(
+      18 * 24 * 60 * 60 * 1_000,
+    );
+  });
+
+  it("rejects an unbounded bootstrap lookback", async () => {
+    await expect(
+      fetchFifteenMinuteCandles(
+        "xyz:SP500",
+        new Date("2026-09-02T20:15:00.000Z"),
+        31,
+      ),
+    ).rejects.toThrow("1-30 days");
+  });
+});
 
 describe("fetchFiveMinuteCandles", () => {
   it("retries transient rate limits before returning candles", async () => {
@@ -113,5 +163,18 @@ function assetContext(markPrice: string, previousDayPrice: string): object {
     funding: "0.00000625",
     premium: "0.0001",
     dayNtlVlm: "1000000",
+  };
+}
+
+function candlePayload(startTime: number, intervalMinutes: number): object {
+  return {
+    t: startTime,
+    T: startTime + intervalMinutes * 60_000 - 1,
+    o: "100",
+    h: "101",
+    l: "99",
+    c: "100.5",
+    v: "42",
+    n: 7,
   };
 }

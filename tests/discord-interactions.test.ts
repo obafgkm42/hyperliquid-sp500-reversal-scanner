@@ -8,7 +8,12 @@ import {
 } from "../src/discord-interactions";
 import { HyperliquidRateLimitError } from "../src/hyperliquid";
 import worker from "../src/index";
-import type { Env, MarketFragilitySnapshot, ScanResult } from "../src/types";
+import type {
+  Env,
+  MarketActivitySnapshot,
+  MarketFragilitySnapshot,
+  ScanResult,
+} from "../src/types";
 
 const GUILD_ID = "123456789012345678";
 const APPLICATION_ID = "234567890123456789";
@@ -180,6 +185,10 @@ describe("handleDiscordInteraction", () => {
           name: "修復機制",
           value: expect.stringContaining("🔴 VWAP 修復失敗"),
         }),
+        expect.objectContaining({
+          name: "市場活躍度",
+          value: expect.stringContaining("累積 RVOL 1.31x"),
+        }),
       ]),
     );
   });
@@ -344,6 +353,26 @@ function scannerStatus(): DiscordScannerStatus {
   return {
     scan: scanResult(),
     fragility: fragilitySnapshot(),
+    activity: activitySnapshot(),
+  };
+}
+
+function activitySnapshot(): MarketActivitySnapshot {
+  return {
+    market: "xyz:SP500",
+    sessionKey: "2026-06-23",
+    level: "ACTIVE",
+    sessionRvol: 1.31,
+    barRvol: 1.7,
+    barActivity: "elevated",
+    percentile: 82,
+    percentileBand: "high",
+    sampleSessions: 46,
+    confidence: "confirmed",
+    dataQuality: "good",
+    currentSlotIndex: 7,
+    asOf: Date.parse("2026-06-23T15:30:00.000Z"),
+    source: "hyperliquid",
   };
 }
 

@@ -151,9 +151,12 @@ gate:
 - status briefs every `BRIEF_INTERVAL_MINUTES` (default `30`); and
 - New York weekends throttled to at most once per hour.
 
-Each scheduled scan makes one Hyperliquid candle request, then evaluates every
-newly completed five-minute candle since the previous scheduled scan. This
-catch-up window preserves signal discovery without tripling API request volume.
+Each steady-state scheduled scan makes one Hyperliquid candle request, then
+evaluates every newly completed five-minute candle since the previous scheduled
+scan. This catch-up window preserves signal discovery without tripling API
+request volume. A history-deficient RVOL installation may make one additional,
+bounded 15-minute candle request in the first post-close hour; successful state
+is then maintained from the normal five-minute feed.
 Before Discord delivery, the Worker checks that the frozen stop and target were
 not touched and that the latest completed price remains inside the entry zone.
 Expired opportunities are logged but not sent.
@@ -174,6 +177,13 @@ VWAP, and historical validation have the same anchor. Hyperliquid remains
 monitored outside RTH for status briefs, but overnight trade alerts stay
 disabled until a separate overnight policy has been validated.
 
+The diagnostic market-activity layer compares cumulative RTH volume with the
+same completed 15-minute slot in prior full US equity sessions. It reports five
+states from `DEADWATER` through `SURGE`, plus sample depth and a same-time
+historical percentile. It never changes signal eligibility. See
+[`docs/market-activity-methodology.md`](docs/market-activity-methodology.md) for
+the formula, thresholds, calendar exclusions, bootstrap, and fail-open rules.
+
 ## Configuration
 
 Public defaults live in `wrangler.toml`. Store credentials and account-specific
@@ -193,14 +203,22 @@ endpoint. Supported values are `zh` and `en`; the default is `zh`:
 ```toml
 [vars]
 LANGUAGE = "zh"
+MARKET_ACTIVITY_MODE = "shadow"
 ```
+
+`MARKET_ACTIVITY_MODE` supports `off`, `shadow`, and `display`. `shadow` is the
+default: metrics are logged and available to authenticated/private status
+queries but are not added to scheduled Discord briefs. `display` adds a detailed
+market-activity field without changing compact notification content or mention
+routing.
 
 For local development, copy `.env.example` to `.dev.vars`. Never commit real
 Discord account settings, webhook URLs, or tokens.
 
 A `SCANNER_STATE` KV binding is required for durable failed-scan recovery,
-cross-invocation signal deduplication, rate-limit incident deduplication, and
-exactly-once version notices. The ID-free binding in `wrangler.toml` uses
+cross-invocation signal deduplication, rate-limit incident deduplication,
+bounded RVOL history, and exactly-once version notices. The ID-free binding in
+`wrangler.toml` uses
 Wrangler automatic provisioning when the Worker is deployed:
 
 ```toml
@@ -219,7 +237,8 @@ The Worker supports one conventional guild-scoped command with three
 subcommands:
 
 - `/scanner status`: performs one live read-only query and privately returns
-  price, signal, repair mechanisms, data coverage, and scanner diagnostics;
+  price, signal, repair mechanisms, RVOL activity when available, data coverage,
+  and scanner diagnostics;
 - `/scanner repair`: privately displays the six repair mechanisms, their live
   thresholds, and the RESILIENT / FRAGILE / BREAKING / PANIC levels without
   requesting market data; and

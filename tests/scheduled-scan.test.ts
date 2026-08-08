@@ -273,6 +273,62 @@ describe("scheduled catch-up scan", () => {
       ),
     ).toBe(true);
   });
+
+  it("bootstraps bounded RVOL history only in the post-close window", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const state = memoryKv({ "last-version-notice": "local-dev" });
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (
+        input: string | URL | Request,
+        init?: RequestInit,
+      ): Promise<Response> => {
+        const url = String(input);
+        calls.push({ url, init });
+        if (url !== HYPERLIQUID_INFO_URL) {
+          return new Response(null, { status: 204 });
+        }
+        const body = JSON.parse(String(init?.body)) as {
+          type: string;
+          req?: { interval?: string };
+        };
+        return body.req?.interval === "15m"
+          ? Response.json(bootstrapFifteenMinuteCandles())
+          : Response.json(hyperliquidCandles());
+      },
+    );
+    const waitUntilPromises: Promise<unknown>[] = [];
+
+    await worker.scheduled(
+      scheduledController("2026-07-23T20:15:00.000Z"),
+      { ...baseEnv(), SCANNER_STATE: state },
+      waitUntilContext(waitUntilPromises),
+    );
+    await Promise.all(waitUntilPromises);
+
+    const candleIntervals = calls
+      .filter((call) => call.url === HYPERLIQUID_INFO_URL)
+      .map((call) => {
+        const body = JSON.parse(String(call.init?.body)) as {
+          req?: { interval?: string };
+        };
+        return body.req?.interval;
+      });
+    expect(candleIntervals).toEqual(["5m", "15m"]);
+    const rawActivity = await state.get("market-activity:v1:xyz:SP500");
+    const activityState = JSON.parse(String(rawActivity)) as {
+      bootstrapAttemptedAt: number | null;
+      completedSessions: unknown[];
+    };
+    expect(activityState.bootstrapAttemptedAt).toBe(
+      Date.parse("2026-07-23T20:15:00.000Z"),
+    );
+    expect(activityState.completedSessions).toHaveLength(10);
+    expect(
+      calls.filter((call) => call.url !== HYPERLIQUID_INFO_URL),
+    ).toHaveLength(0);
+  });
 });
 
 function baseEnv(): Env {
@@ -318,6 +374,39 @@ function hyperliquidCandles(): Array<Record<string, number | string>> {
       };
     },
   );
+}
+
+function bootstrapFifteenMinuteCandles(): Array<
+  Record<string, number | string>
+> {
+  const sessionDates = [
+    "2026-07-09",
+    "2026-07-10",
+    "2026-07-13",
+    "2026-07-14",
+    "2026-07-15",
+    "2026-07-16",
+    "2026-07-17",
+    "2026-07-20",
+    "2026-07-21",
+    "2026-07-22",
+  ];
+  return sessionDates.flatMap((sessionDate) => {
+    const firstStartTime = Date.parse(`${sessionDate}T13:30:00.000Z`);
+    return Array.from({ length: 26 }, (_, index) => {
+      const startTime = firstStartTime + index * 15 * 60_000;
+      return {
+        t: startTime,
+        T: startTime + 15 * 60_000 - 1,
+        o: "100",
+        h: "101",
+        l: "99",
+        c: "100",
+        v: "300",
+        n: 30,
+      };
+    });
+  });
 }
 
 function scheduledController(timestamp: string): ScheduledController {

@@ -1,4 +1,9 @@
-import type { Env, Language, ScannerConfig } from "./types";
+import type {
+  Env,
+  Language,
+  MarketActivityMode,
+  ScannerConfig,
+} from "./types";
 
 const DISCORD_WEBHOOK_PREFIX = "https://discord.com/api/webhooks/";
 
@@ -30,6 +35,7 @@ export function loadConfig(env: Env): ScannerConfig {
       30,
       "BRIEF_INTERVAL_MINUTES",
     ),
+    marketActivityMode: parseMarketActivityMode(env.MARKET_ACTIVITY_MODE),
     minimumWatchPriceR: positiveNumber(
       env.MINIMUM_WATCH_PRICE_R,
       2,
@@ -59,6 +65,16 @@ export function loadConfig(env: Env): ScannerConfig {
     workerVersionUploadedAt: parseCloudflareVersionTimestamp(env),
     scannerState: env.SCANNER_STATE,
   };
+}
+
+function parseMarketActivityMode(
+  rawValue: string | undefined,
+): MarketActivityMode {
+  const mode = rawValue?.trim().toLowerCase() || "shadow";
+  if (mode !== "off" && mode !== "shadow" && mode !== "display") {
+    throw new Error("MARKET_ACTIVITY_MODE must be off, shadow, or display");
+  }
+  return mode;
 }
 
 function parseLanguage(rawValue: string | undefined): Language {

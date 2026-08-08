@@ -2,6 +2,7 @@ import type { Candle, MarketAssetContext } from "./types";
 
 const HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info";
 const REQUEST_LOOKBACK_MS = 18 * 60 * 60 * 1_000;
+const MAX_BOOTSTRAP_LOOKBACK_DAYS = 30;
 const MAX_CANDLE_REQUEST_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 250;
 const RATE_LIMIT_STATUS = 429;
@@ -51,8 +52,60 @@ export async function fetchFiveMinuteCandles(
   fetcher: typeof fetch = fetch,
 ): Promise<Candle[]> {
   const endTime = now.getTime();
-  const response = await fetchCandlesWithRetry(coin, endTime, fetcher);
+  return fetchCandles(
+    coin,
+    "5m",
+    endTime - REQUEST_LOOKBACK_MS,
+    endTime,
+    fetcher,
+  );
+}
 
+/**
+ * Fetch a bounded fifteen-minute history for one post-close RVOL bootstrap.
+ *
+ * The caller controls retry cadence; this function caps the window so a bad
+ * configuration cannot turn every attempt into a maximum-size candle parse.
+ */
+export async function fetchFifteenMinuteCandles(
+  coin: string,
+  now: Date,
+  lookbackDays: number,
+  fetcher: typeof fetch = fetch,
+): Promise<Candle[]> {
+  if (
+    !Number.isInteger(lookbackDays) ||
+    lookbackDays <= 0 ||
+    lookbackDays > MAX_BOOTSTRAP_LOOKBACK_DAYS
+  ) {
+    throw new Error(
+      `fifteen-minute candle lookback must be 1-${MAX_BOOTSTRAP_LOOKBACK_DAYS} days`,
+    );
+  }
+  const endTime = now.getTime();
+  return fetchCandles(
+    coin,
+    "15m",
+    endTime - lookbackDays * 24 * 60 * 60 * 1_000,
+    endTime,
+    fetcher,
+  );
+}
+
+async function fetchCandles(
+  coin: string,
+  interval: "5m" | "15m",
+  startTime: number,
+  endTime: number,
+  fetcher: typeof fetch,
+): Promise<Candle[]> {
+  const response = await fetchCandlesWithRetry(
+    coin,
+    interval,
+    startTime,
+    endTime,
+    fetcher,
+  );
   const payload: unknown = await response.json();
   if (!Array.isArray(payload)) {
     throw new Error("Hyperliquid candle response is invalid");
@@ -103,6 +156,8 @@ export async function fetchXyzMarketContexts(
 
 async function fetchCandlesWithRetry(
   coin: string,
+  interval: "5m" | "15m",
+  startTime: number,
   endTime: number,
   fetcher: typeof fetch,
 ): Promise<Response> {
@@ -111,8 +166,8 @@ async function fetchCandlesWithRetry(
       type: "candleSnapshot",
       req: {
         coin,
-        interval: "5m",
-        startTime: endTime - REQUEST_LOOKBACK_MS,
+        interval,
+        startTime,
         endTime,
       },
     },

@@ -14,6 +14,7 @@ describe("loadConfig", () => {
     expect(config.regularScanMinutes).toBe(15);
     expect(config.finalHourScanMinutes).toBe(5);
     expect(config.briefIntervalMinutes).toBe(30);
+    expect(config.marketActivityMode).toBe("shadow");
     expect(config.minimumWatchPriceR).toBe(2);
     expect(config.minimumWatchConfidenceScore).toBe(64);
     expect(config.minimumPriceR).toBe(3.5);
@@ -66,5 +67,22 @@ describe("loadConfig", () => {
         LANGUAGE: "ja",
       })
     ).toThrow("LANGUAGE must be en or zh");
+  });
+
+  it("loads and validates the market activity rollout mode", () => {
+    const config = loadConfig({
+      DISCORD_WEBHOOK_URL:
+        "https://discord.com/api/webhooks/example/token",
+      MARKET_ACTIVITY_MODE: "DISPLAY",
+    });
+
+    expect(config.marketActivityMode).toBe("display");
+    expect(() =>
+      loadConfig({
+        DISCORD_WEBHOOK_URL:
+          "https://discord.com/api/webhooks/example/token",
+        MARKET_ACTIVITY_MODE: "alerts",
+      })
+    ).toThrow("MARKET_ACTIVITY_MODE");
   });
 });

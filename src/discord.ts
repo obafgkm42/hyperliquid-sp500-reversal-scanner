@@ -8,9 +8,11 @@ import {
   formatMarketFragilitySummary,
   marketFragilityColor,
 } from "./market-fragility-format";
+import { formatMarketActivitySummary } from "./market-activity-format";
 import { formatResilienceDecayCardSummary } from "./resilience-decay-format";
 import type {
   Language,
+  MarketActivitySnapshot,
   MarketFragilitySnapshot,
   NotificationOpportunity,
   ReversalLocation,
@@ -154,6 +156,7 @@ export async function sendMarketBrief(
   language: Language = "zh",
   fragility?: MarketFragilitySnapshot,
   resilience?: ResilienceDecayMetrics,
+  activity?: MarketActivitySnapshot,
 ): Promise<void> {
   const english = language === "en";
   const chartMetadata =
@@ -178,6 +181,9 @@ export async function sendMarketBrief(
     ...(resilience?.status === "FADING"
       ? resilienceDecayFields(resilience, language)
       : []),
+    ...(activity === undefined
+      ? []
+      : marketActivityFields(activity, language)),
     {
       name: english ? "Status" : "狀態",
       value: localizeDiagnostic(result.status, language),
@@ -367,6 +373,7 @@ export function publicScanResult(
   result: ScanResult,
   language: Language = "zh",
   fragility?: MarketFragilitySnapshot,
+  activity?: MarketActivitySnapshot,
 ): object {
   return {
     market: result.market,
@@ -387,6 +394,11 @@ export function publicScanResult(
       ? {}
       : {
           marketFragility: fragility,
+        }),
+    ...(activity === undefined
+      ? {}
+      : {
+          marketActivity: activity,
         }),
   };
 }
@@ -604,6 +616,19 @@ function resilienceDecayFields(
     {
       name: language === "en" ? "Resilience decay" : "韌性衰退",
       value: formatResilienceDecayCardSummary(resilience, language),
+      inline: false,
+    },
+  ];
+}
+
+function marketActivityFields(
+  activity: MarketActivitySnapshot,
+  language: Language,
+): Array<{ name: string; value: string; inline: boolean }> {
+  return [
+    {
+      name: language === "en" ? "Market activity" : "市場活躍度",
+      value: formatMarketActivitySummary(activity, language),
       inline: false,
     },
   ];
